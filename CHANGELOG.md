@@ -1,8 +1,10 @@
 # Changelog
 
-## v0.1.0
+## Unreleased
 
 - Separate the task and goal warning counts, so each list endpoint's `total + warnings` equals its own directory's file count instead of sharing a combined figure.
+
+## v0.1.0
 
 - Add typed `GET /api/v1/tasks` and `GET /api/v1/goals` reads served from an in-memory index built from the vault working tree.
 - Add `GET /readiness` reporting `vault`, `index_age_seconds` and the indexed commit `head`.
