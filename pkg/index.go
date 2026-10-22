@@ -49,7 +49,8 @@ type Index struct {
 	invalidTasks map[string]string
 	invalidGoals map[string]string
 	taskSets     taskSets
-	warnings     int
+	taskWarnings int
+	goalWarnings int
 	builtAt      time.Time
 	ready        bool
 	head         string
@@ -123,7 +124,8 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	i.goals = goals
 	i.goalByID = goalByID
 	i.invalidGoals = goalInvalid
-	i.warnings = taskWarnings + goalWarnings
+	i.taskWarnings = taskWarnings
+	i.goalWarnings = goalWarnings
 	i.builtAt = time.Now()
 	i.head = ResolveHead(i.cfg.VaultPath)
 	i.ready = true
@@ -303,7 +305,7 @@ func (i *Index) buildGoals(
 func (i *Index) QueryTasks(filter TaskFilter) ([]TaskItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.filterTasks(filter), i.warnings, ageSeconds(i.builtAt)
+	return i.filterTasks(filter), i.taskWarnings, ageSeconds(i.builtAt)
 }
 
 func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
@@ -358,7 +360,7 @@ func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
 func (i *Index) QueryGoals() ([]GoalItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return append([]GoalItem(nil), i.goals...), i.warnings, ageSeconds(i.builtAt)
+	return append([]GoalItem(nil), i.goals...), i.goalWarnings, ageSeconds(i.builtAt)
 }
 
 // GetTask resolves one task by identifier or filename slug. found is false when
@@ -392,7 +394,7 @@ func (i *Index) Readiness() Readiness {
 		Vault:           i.cfg.VaultName,
 		IndexAgeSeconds: ageSeconds(i.builtAt),
 		Head:            i.head,
-		Warnings:        i.warnings,
+		Warnings:        i.taskWarnings + i.goalWarnings,
 	}
 }
 
