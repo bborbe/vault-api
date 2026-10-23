@@ -122,6 +122,21 @@ var _ = Describe("publishChanges", func() {
 			To(Equal("ccccccc3"))
 	})
 
+	It("abandons a poison baseline even while the vault keeps moving", func() {
+		// The budget is keyed on the baseline, not the range: if it were keyed on
+		// the range, every new commit would reset the counter and an actively
+		// edited vault would wedge the stream forever.
+		emitter := &fakeEmitter{err: errors.New("message too large")}
+		publisher := newPublisher(emitter, nil)
+
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "bbbbbbb2")).
+			To(Equal("aaaaaaa1"))
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "ccccccc3")).
+			To(Equal("aaaaaaa1"))
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "ddddddd4")).
+			To(Equal("ddddddd4"))
+	})
+
 	It("never abandons a transient failure, however long the outage", func() {
 		emitter := &fakeEmitter{err: errors.New("dial tcp: connection refused")}
 		publisher := newPublisher(emitter, nil)

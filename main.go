@@ -266,10 +266,13 @@ func publishChanges(
 		return emittedHead
 	}
 	if err := emitter.Emit(ctx, emittedHead, current); err != nil {
-		rangeKey := emittedHead + ".." + current
+		// Key the budget on the baseline, not on the range: `current` moves with
+		// every commit, so a range key would reset the counter on an actively
+		// edited vault and the cap would never fire.
+		rangeKey := emittedHead
 		if changes.fail(rangeKey, err) {
 			glog.Errorf(
-				"abandoning change batch %s after %d failed attempts; later changes resume from %s: %v",
+				"abandoning changes from %s after %d failed attempts; resuming at %s: %v",
 				rangeKey,
 				maxPublishRetries,
 				current,
@@ -278,8 +281,9 @@ func publishChanges(
 			return current
 		}
 		glog.Warningf(
-			"publish changes %s failed (attempt %d/%d): %v",
+			"publish changes %s..%s failed (attempt %d/%d): %v",
 			rangeKey,
+			current,
 			changes.attempts,
 			maxPublishRetries,
 			err,
