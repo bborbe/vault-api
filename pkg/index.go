@@ -39,7 +39,8 @@ type TaskFilter struct {
 // whenever the working tree's HEAD changes, so list queries are map lookups
 // rather than per-file reads.
 type Index struct {
-	cfg Config
+	cfg     Config
+	metrics Metrics
 
 	mu           sync.RWMutex
 	tasks        []TaskItem
@@ -88,10 +89,12 @@ func newTaskSets() taskSets {
 	}
 }
 
-// NewIndex creates an empty index. Build populates it.
-func NewIndex(cfg Config) *Index {
+// NewIndex creates an empty index. Build populates it and refreshes the
+// open-task gauge.
+func NewIndex(cfg Config, metrics Metrics) *Index {
 	return &Index{
 		cfg:          cfg,
+		metrics:      metrics,
 		tasks:        make([]TaskItem, 0),
 		goals:        make([]GoalItem, 0),
 		taskByID:     map[string]int{},
@@ -116,7 +119,6 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	}
 
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	i.tasks = tasks
 	i.taskByID = taskByID
 	i.invalidTasks = taskInvalid
@@ -129,7 +131,31 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	i.builtAt = time.Now()
 	i.head = ResolveHead(i.cfg.VaultPath)
 	i.ready = true
+	i.mu.Unlock()
+
+	// Published after the swap so a scrape never sees the new counts against
+	// the old index.
+	i.metrics.SetOpenTasks(openTasksByType(tasks))
 	return nil
+}
+
+// openTasksByType counts the indexed tasks whose status is neither completed
+// nor aborted, per task_type. A task with no task_type counts under
+// TaskTypeUnknown, and one with no status counts as open — an unparseable
+// status is what excludes a page, not a missing one (see buildTasks).
+func openTasksByType(tasks []TaskItem) map[string]int {
+	counts := make(map[string]int, len(tasks))
+	for _, task := range tasks {
+		if task.Status == "completed" || task.Status == "aborted" {
+			continue
+		}
+		taskType := task.TaskType
+		if taskType == "" {
+			taskType = TaskTypeUnknown
+		}
+		counts[taskType]++
+	}
+	return counts
 }
 
 func (i *Index) buildTasks(
@@ -166,56 +192,19 @@ func (i *Index) buildTasks(
 	}
 
 	for _, page := range pages {
-		slug := slugify(page.Name)
-		task := domain.NewTask(page.RawMap(), page.FileMetadata, page.Content)
-
-		rawStatus := task.GetString("status")
-		status := task.Status()
-		if rawStatus != "" && status == "" {
+		item, reason, ok := i.taskItem(page)
+		if !ok {
 			warnings++
-			invalid[slug] = "unknown status " + rawStatus
-			invalid[page.Name] = "unknown status " + rawStatus
+			invalid[slugify(page.Name)] = reason
+			invalid[page.Name] = reason
 			continue
-		}
-
-		phase := ""
-		if rawPhase := task.GetString("phase"); rawPhase != "" {
-			normalized, ok := domain.NormalizeTaskPhase(rawPhase)
-			if !ok {
-				warnings++
-				invalid[slug] = "unknown phase " + rawPhase
-				invalid[page.Name] = "unknown phase " + rawPhase
-				continue
-			}
-			phase = string(normalized)
-		}
-
-		id := task.TaskIdentifier()
-		if id == "" {
-			id = slug
-		}
-		goals := task.Goals()
-		if goals == nil {
-			goals = []string{}
-		}
-		item := TaskItem{
-			ID:       id,
-			Title:    page.Name,
-			Path:     relPath(i.cfg.VaultPath, page.FilePath),
-			Status:   string(status),
-			Phase:    phase,
-			Assignee: task.Assignee(),
-			Goals:    goals,
-			Cluster:  optionalString(task.GetString("cluster")),
-			Flag:     task.Flag(),
-			Vault:    i.cfg.VaultName,
 		}
 
 		idx := len(tasks)
 		tasks = append(tasks, item)
-		byID[id] = idx
+		byID[item.ID] = idx
 		byID[page.Name] = idx
-		byID[slug] = idx
+		byID[slugify(page.Name)] = idx
 		sets.assignee.add(item.Assignee, idx)
 		sets.status.add(item.Status, idx)
 		sets.phase.add(item.Phase, idx)
@@ -228,6 +217,49 @@ func (i *Index) buildTasks(
 	}
 
 	return tasks, invalid, warnings, byID, sets, nil
+}
+
+// taskItem converts one page into a TaskItem. ok is false when the page must be
+// excluded from the index, and reason then names why for the warnings map.
+func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
+	task := domain.NewTask(page.RawMap(), page.FileMetadata, page.Content)
+
+	rawStatus := task.GetString("status")
+	status := task.Status()
+	if rawStatus != "" && status == "" {
+		return TaskItem{}, "unknown status " + rawStatus, false
+	}
+
+	phase := ""
+	if rawPhase := task.GetString("phase"); rawPhase != "" {
+		normalized, ok := domain.NormalizeTaskPhase(rawPhase)
+		if !ok {
+			return TaskItem{}, "unknown phase " + rawPhase, false
+		}
+		phase = string(normalized)
+	}
+
+	id := task.TaskIdentifier()
+	if id == "" {
+		id = slugify(page.Name)
+	}
+	goals := task.Goals()
+	if goals == nil {
+		goals = []string{}
+	}
+	return TaskItem{
+		ID:       id,
+		Title:    page.Name,
+		Path:     relPath(i.cfg.VaultPath, page.FilePath),
+		Status:   string(status),
+		Phase:    phase,
+		TaskType: task.GetString("task_type"),
+		Assignee: task.Assignee(),
+		Goals:    goals,
+		Cluster:  optionalString(task.GetString("cluster")),
+		Flag:     task.Flag(),
+		Vault:    i.cfg.VaultName,
+	}, "", true
 }
 
 func (i *Index) buildGoals(

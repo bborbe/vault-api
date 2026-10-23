@@ -5,6 +5,7 @@
 package vaultapi
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,13 +26,42 @@ func ResolveHead(vaultPath string) string {
 		return shortSHA(line)
 	}
 	ref := strings.TrimSpace(strings.TrimPrefix(line, "ref: "))
-	if value, err := os.ReadFile(filepath.Join(gitDir, filepath.FromSlash(ref))); err == nil {
-		return shortSHA(strings.TrimSpace(string(value)))
+	if value, ok := readRef(gitDir, ref); ok {
+		return shortSHA(value)
 	}
 	if value, ok := packedRef(gitDir, ref); ok {
 		return shortSHA(value)
 	}
 	return ""
+}
+
+// readRef reads the ref file git HEAD points at. The ref string comes from
+// .git/HEAD, so it is untrusted input as far as this function is concerned: it
+// is opened through an os.Root confined to gitDir, so no ref value can read
+// outside it.
+func readRef(gitDir, ref string) (string, bool) {
+	if ref == "" || filepath.IsAbs(ref) || strings.HasPrefix(ref, "..") {
+		return "", false
+	}
+	root, err := os.OpenRoot(gitDir)
+	if err != nil {
+		return "", false
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+	file, err := root.Open(filepath.FromSlash(ref))
+	if err != nil {
+		return "", false
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(data)), true
 }
 
 func packedRef(gitDir, ref string) (string, bool) {
