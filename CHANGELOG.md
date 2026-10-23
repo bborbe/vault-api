@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.8.0
 
 - feat: Publish a task change event from every successful write, so `vault-api` becomes the producer the executor's compacted task view reads. The three write handlers publish through `pkg/publisher.TaskPublisher` after git-rest accepts the file — at the single `document.write` chokepoint, so no handler carries its own copy. A publish failure is logged and the request still answers 200: the file is already in git, an error would make the client retry a transition that is now applied, and the pull path publishes the same change from the commit diff. `--kafka-brokers` / `KAFKA_BROKERS` enables the producer and `--topic-prefix` / `TOPIC_PREFIX` selects the per-cluster topic; both are optional, and unset means publishing is disabled while reads and writes are unaffected. The producer is built off the startup path behind a `publisher.Deferred` handle that **both** the write handlers and the pull feed share, so an unreachable broker cannot delay the read API and one change is published once: publishes report a not-ready error until construction succeeds. On the request path a publish is bounded by a 5 s timeout and runs under `context.WithoutCancel`, so neither a broker that goes away after startup nor a client hanging up can hold open or cancel a response that is already decided. With no brokers configured the handle holds a discarding publisher, so a deliberately disabled producer does not log an error on every successful write.
 
