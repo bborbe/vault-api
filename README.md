@@ -23,9 +23,18 @@ When `GATEWAY_SECRET` is set, every `/api/v1/*` request must carry it in `X-Gate
 go run . \
   --vault-path /path/to/vault \
   --vault-name private-personal \
+  --event-vault-name personal \
   --tasks-dir "25 Tasks" \
   --goals-dir "24 Goals"
 ```
+
+`--vault-name` is the display name the read API reports. `--event-vault-name` is the
+routing slug stamped on task change events as `lib.Task.Vault`, and it must equal the
+`agent-task-controller`'s `VAULT_NAME` and the `agent-task-executor`'s `TASK_VAULT` for
+the same vault. A consumer owns a task only when the event's value equals its own, so a
+mismatch drops every task this instance publishes as `foreign vault` and nothing is
+spawned. Omitted, it falls back to `--vault-name` — correct only where the two names are
+the same.
 
 ## Build
 

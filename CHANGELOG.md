@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: Add `--event-vault-name` / `EVENT_VAULT_NAME`, the vault slug stamped on task change events as `lib.Task.Vault`. It is separate from `--vault-name` because the two are different identities: `--vault-name` is the display name the read API reports, while the event field is the routing key a consumer compares against its own vault. Before this, an instance whose display name differs from its routing slug stamped the display name, and every task it published was dropped as foreign by the executor that owns it (`skip task <id>: foreign vault vault=<display> task_vault=<slug>`) — the task was never spawned. Empty falls back to `--vault-name`, so an instance where the two coincide is unchanged.
+
 ## v0.9.0
 
 - feat: Add `POST /api/v1/merge`, the production caller of `ResolveDivergedPull`. It takes the three sides of a diverged file — `base`, `ours` and `theirs`, each with its committer time — resolves them per frontmatter key and writes the merged bytes through git-rest, answering `{"result":"merged"}` or `{"result":"quarantined","reason":…}`. The seam had shipped since v0.6.0 with no caller, so no running path ever invoked the merge; the endpoint supplies one without making `vault-api` a puller, which it is not — git-rest pulls and the refresh loop only compares HEAD.
