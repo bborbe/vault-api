@@ -155,26 +155,54 @@ var _ = Describe("Index", func() {
 		Expect(goal.ID).To(Equal("a-goal"))
 	})
 
-	It("counts open tasks per task_type and refreshes the gauge on every build", func() {
-		writeFile(tasksDir, "Alpha", taskFrontmatter("status: in_progress", "task_type: pr-review"))
-		writeFile(tasksDir, "Beta", taskFrontmatter("status: next", "task_type: pr-review"))
-		writeFile(tasksDir, "Gamma", taskFrontmatter("status: completed", "task_type: pr-review"))
-		writeFile(tasksDir, "Delta", taskFrontmatter("status: aborted", "task_type: pr-review"))
+	It("counts open tasks per frontmatter stage and task_type, refreshing on every build", func() {
+		writeFile(
+			tasksDir,
+			"Alpha",
+			taskFrontmatter("status: in_progress", "task_type: pr-review", "stage: prod"),
+		)
+		writeFile(
+			tasksDir,
+			"Beta",
+			taskFrontmatter("status: next", "task_type: pr-review", "stage: prod"),
+		)
+		writeFile(
+			tasksDir,
+			"Gamma",
+			taskFrontmatter("status: completed", "task_type: pr-review", "stage: prod"),
+		)
+		writeFile(
+			tasksDir,
+			"Delta",
+			taskFrontmatter("status: aborted", "task_type: pr-review", "stage: dev"),
+		)
 		writeFile(
 			tasksDir,
 			"Epsilon",
-			taskFrontmatter("status: in_progress", "task_type: github-release"),
+			taskFrontmatter("status: in_progress", "task_type: github-release", "stage: dev"),
 		)
-		writeFile(tasksDir, "Zeta", taskFrontmatter("status: in_progress"))
-		writeFile(tasksDir, "Eta", taskFrontmatter("phase: execution"))
+		writeFile(tasksDir, "Zeta", taskFrontmatter("status: in_progress", "stage: prod"))
+		writeFile(
+			tasksDir,
+			"Eta",
+			taskFrontmatter("phase: execution", "task_type: pr-review", "stage: dev"),
+		)
+		writeFile(
+			tasksDir,
+			"Theta",
+			taskFrontmatter("status: in_progress", "task_type: pr-review", `stage: ""`),
+		)
+		writeFile(tasksDir, "Iota", taskFrontmatter("status: in_progress", "task_type: pr-review"))
 		Expect(index.Build(ctx, store)).To(Succeed())
 
-		// completed and aborted are excluded; a task with no task_type and one
-		// with no status line both count as open, under the unknown bucket.
-		Expect(metrics.openTasks).To(Equal(map[string]int{
-			"pr-review":      2,
-			"github-release": 1,
-			"unknown":        2,
+		// completed and aborted are excluded; a task with no stage, no task_type
+		// or no status line still counts as open, under the matching unknown bucket.
+		Expect(metrics.openTasks).To(Equal(map[vaultapi.OpenTaskKey]int{
+			{Stage: "prod", TaskType: "pr-review"}:     2, // Alpha, Beta
+			{Stage: "prod", TaskType: "unknown"}:       1, // Zeta — no task_type
+			{Stage: "dev", TaskType: "github-release"}: 1, // Epsilon
+			{Stage: "dev", TaskType: "pr-review"}:      1, // Eta — no status line
+			{Stage: "unknown", TaskType: "pr-review"}:  2, // Theta empty stage, Iota missing
 		}))
 		Expect(metrics.setCalls).To(Equal(1))
 	})
@@ -182,7 +210,7 @@ var _ = Describe("Index", func() {
 
 type testMetrics struct {
 	reads     map[string]int64
-	openTasks map[string]int
+	openTasks map[vaultapi.OpenTaskKey]int
 	setCalls  int
 }
 
@@ -190,7 +218,7 @@ func (m *testMetrics) AddFileReads(kind string, count int64) {
 	m.reads[kind] += count
 }
 
-func (m *testMetrics) SetOpenTasks(counts map[string]int) {
+func (m *testMetrics) SetOpenTasks(counts map[vaultapi.OpenTaskKey]int) {
 	m.setCalls++
 	m.openTasks = counts
 }
