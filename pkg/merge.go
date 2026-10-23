@@ -31,6 +31,13 @@ const (
 	ReasonBodyConflict MergeReason = "body conflict outside the frontmatter"
 	// ReasonLifecycle names status/phase edits that are not a legal transition.
 	ReasonLifecycle MergeReason = "lifecycle fields are not a legal transition"
+	// ReasonCounter names a counter field that is not an integer on both sides.
+	ReasonCounter MergeReason = "a counter field is not an integer"
+	// ReasonListConflict names a list one side deleted while the other changed
+	// it: neither the union nor the deletion is right without a human.
+	ReasonListConflict MergeReason = "a list was deleted on one side and changed on the other"
+	// ReasonRenderFailed names a merge that resolved but could not be encoded.
+	ReasonRenderFailed MergeReason = "merged frontmatter could not be rendered"
 )
 
 // MergeResult is the outcome of resolving a diverged file. Content is the file
@@ -72,9 +79,9 @@ func MergeFile(base, ours, theirs Side) MergeResult {
 		return MergeResult{Quarantine: true, Reason: ReasonUnparsable}
 	}
 
-	merged, keys, ok := mergeKeys(baseFile, oursFile, theirsFile, ours, theirs)
-	if !ok {
-		return MergeResult{Quarantine: true, Reason: ReasonLifecycle}
+	merged, keys, reason := mergeKeys(baseFile, oursFile, theirsFile, ours, theirs)
+	if reason != "" {
+		return MergeResult{Quarantine: true, Reason: reason}
 	}
 
 	body, ok := mergeBody(baseFile.body, oursFile.body, theirsFile.body)
@@ -82,7 +89,11 @@ func MergeFile(base, ours, theirs Side) MergeResult {
 		return MergeResult{Quarantine: true, Reason: ReasonBodyConflict}
 	}
 
-	return MergeResult{Content: render(merged, keys, body)}
+	content, ok := render(merged, keys, body)
+	if !ok {
+		return MergeResult{Quarantine: true, Reason: ReasonRenderFailed}
+	}
+	return MergeResult{Content: content}
 }
 
 // file is one side of the merge, split into its frontmatter keys and its body.
@@ -95,12 +106,23 @@ type file struct {
 // parseFile splits a vault file into frontmatter and body. A file with no
 // frontmatter block parses to an empty key set and a body holding the whole
 // content, so a body-only file merges as a pure body comparison.
+//
+// CRLF line endings are normalised to LF first: a CRLF file would otherwise
+// never match the `---\n` marker and its whole frontmatter would be treated as
+// body text.
 func parseFile(content []byte) (*file, bool) {
-	text := string(content)
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
 	if !strings.HasPrefix(text, "---\n") {
 		return &file{values: map[string]*yaml.Node{}, body: text}, true
 	}
 	rest := text[len("---\n"):]
+
+	// An empty frontmatter block (`---\n---\nbody`) has no closing newline to
+	// cut on, so it is matched before the general split.
+	if strings.HasPrefix(rest, "---\n") {
+		return &file{values: map[string]*yaml.Node{}, body: rest[len("---\n"):]}, true
+	}
+
 	header, body, found := strings.Cut(rest, "\n---")
 	if !found {
 		return nil, false
@@ -129,18 +151,18 @@ func parseFile(content []byte) (*file, bool) {
 	return result, true
 }
 
-// mergeKeys resolves every frontmatter key. ok is false when the lifecycle rule
-// found no single legal result and the caller must quarantine.
+// mergeKeys resolves every frontmatter key. A non-empty reason means no rule
+// could resolve the file and the caller must quarantine with that reason.
 func mergeKeys(
 	base, ours, theirs *file,
 	oursSide, theirsSide Side,
-) (map[string]*yaml.Node, []string, bool) {
+) (map[string]*yaml.Node, []string, MergeReason) {
 	keys := keyOrder(base, ours, theirs)
 	merged := make(map[string]*yaml.Node, len(keys))
 	kept := make([]string, 0, len(keys))
 
 	for _, key := range keys {
-		value, keep, ok := mergeKey(
+		value, keep, reason := mergeKey(
 			key,
 			base.values[key],
 			ours.values[key],
@@ -148,8 +170,8 @@ func mergeKeys(
 			oursSide,
 			theirsSide,
 		)
-		if !ok {
-			return nil, nil, false
+		if reason != "" {
+			return nil, nil, reason
 		}
 		if !keep {
 			continue
@@ -157,22 +179,25 @@ func mergeKeys(
 		merged[key] = value
 		kept = append(kept, key)
 	}
-	return merged, kept, true
+	return merged, kept, ""
 }
 
-// mergeKey resolves one key. keep is false when both sides deleted it.
+// mergeKey resolves one key. keep is false when the key is absent from the
+// merged file — either both sides deleted it, or the winning side deleted it.
+// A nil node is never returned with keep true: render would hand it to the
+// yaml encoder, which dereferences it and panics.
 func mergeKey(
 	key string,
 	base, ours, theirs *yaml.Node,
 	oursSide, theirsSide Side,
-) (value *yaml.Node, keep bool, ok bool) {
+) (value *yaml.Node, keep bool, reason MergeReason) {
 	switch {
 	case equalNodes(ours, theirs):
-		return ours, ours != nil, true
+		return ours, ours != nil, ""
 	case equalNodes(theirs, base):
-		return ours, ours != nil, true
+		return ours, ours != nil, ""
 	case equalNodes(ours, base):
-		return theirs, theirs != nil, true
+		return theirs, theirs != nil, ""
 	}
 
 	// Both sides changed the key differently. metrics_sessions is matched
@@ -180,18 +205,18 @@ func mergeKey(
 	// so the integer max would quarantine it.
 	switch {
 	case key == "metrics_sessions":
-		return concatList(ours, theirs), true, true
+		return concatList(ours, theirs)
 	case isCounterKey(key):
 		return maxCounter(ours, theirs)
 	case isLifecycleKey(key):
 		return lifecycleValue(key, base, ours, theirs)
 	case isAppendOnlyListKey(key):
-		return unionList(ours, theirs), true, true
+		return unionList(ours, theirs)
 	default:
 		if theirsSide.CommitterTime.After(oursSide.CommitterTime) {
-			return theirs, true, true
+			return theirs, theirs != nil, ""
 		}
-		return ours, true, true
+		return ours, ours != nil, ""
 	}
 }
 
@@ -225,35 +250,33 @@ func isAppendOnlyListKey(key string) bool {
 }
 
 // maxCounter keeps the larger integer of the two sides.
-func maxCounter(ours, theirs *yaml.Node) (*yaml.Node, bool, bool) {
+func maxCounter(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 	oursValue, oursOK := intValue(ours)
 	theirsValue, theirsOK := intValue(theirs)
 	if !oursOK || !theirsOK {
-		return nil, false, false
+		return nil, false, ReasonCounter
 	}
 	if theirsValue > oursValue {
-		return theirs, true, true
+		return theirs, true, ""
 	}
-	return ours, true, true
+	return ours, true, ""
 }
 
 // lifecycleValue accepts a side only when it is a legal successor of the base
 // value and the other side is not. Two different legal successors, or none,
 // quarantine: the transition graph cannot pick between them.
-func lifecycleValue(key string, base, ours, theirs *yaml.Node) (*yaml.Node, bool, bool) {
+func lifecycleValue(key string, base, ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 	baseValue := scalarValue(base)
 	oursLegal := isLegalTransition(key, baseValue, scalarValue(ours))
 	theirsLegal := isLegalTransition(key, baseValue, scalarValue(theirs))
 
 	switch {
 	case oursLegal && !theirsLegal:
-		return ours, true, true
+		return ours, true, ""
 	case theirsLegal && !oursLegal:
-		return theirs, true, true
-	case oursLegal && theirsLegal && equalNodes(ours, theirs):
-		return ours, true, true
+		return theirs, true, ""
 	default:
-		return nil, false, false
+		return nil, false, ReasonLifecycle
 	}
 }
 
@@ -285,11 +308,13 @@ func isLegalTransition(key, from, to string) bool {
 }
 
 // unionList appends theirs after ours, dropping duplicates and keeping order.
-func unionList(ours, theirs *yaml.Node) *yaml.Node {
+// A side that deleted the key while the other changed it quarantines: neither
+// the union nor the deletion is right without a human.
+func unionList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 	oursItems, oursOK := listValue(ours)
 	theirsItems, theirsOK := listValue(theirs)
 	if !oursOK || !theirsOK {
-		return ours
+		return nil, false, ReasonListConflict
 	}
 	seen := map[string]bool{}
 	result := make([]string, 0, len(oursItems)+len(theirsItems))
@@ -300,18 +325,18 @@ func unionList(ours, theirs *yaml.Node) *yaml.Node {
 		seen[item] = true
 		result = append(result, item)
 	}
-	return stringListNode(result)
+	return stringListNode(result), true, ""
 }
 
 // concatList appends theirs after ours, keeping duplicates: metrics_sessions
 // records every session that touched the task, so a union would drop history.
-func concatList(ours, theirs *yaml.Node) *yaml.Node {
+func concatList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 	oursItems, oursOK := listValue(ours)
 	theirsItems, theirsOK := listValue(theirs)
 	if !oursOK || !theirsOK {
-		return ours
+		return nil, false, ReasonListConflict
 	}
-	return stringListNode(append(append([]string{}, oursItems...), theirsItems...))
+	return stringListNode(append(append([]string{}, oursItems...), theirsItems...)), true, ""
 }
 
 // mergeBody takes a side's body when only one side changed it. Two different
@@ -329,43 +354,55 @@ func mergeBody(base, ours, theirs string) (string, bool) {
 	}
 }
 
-// render rebuilds the file from the merged keys and body.
-func render(values map[string]*yaml.Node, keys []string, body string) []byte {
+// render rebuilds the file from the merged keys and body. ok is false when the
+// frontmatter cannot be encoded, so the caller quarantines rather than writing
+// a file whose frontmatter has been silently dropped.
+func render(values map[string]*yaml.Node, keys []string, body string) ([]byte, bool) {
 	if len(keys) == 0 {
-		return []byte(body)
+		return []byte(body), true
 	}
 	mapping := &yaml.Node{Kind: yaml.MappingNode}
 	for _, key := range keys {
+		value := values[key]
+		if value == nil {
+			return nil, false
+		}
 		mapping.Content = append(mapping.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Value: key},
-			values[key],
+			value,
 		)
 	}
 	encoded, err := yaml.Marshal(mapping)
 	if err != nil {
-		return []byte(body)
+		return nil, false
 	}
 	var builder strings.Builder
 	builder.WriteString("---\n")
 	builder.Write(encoded)
 	builder.WriteString("---\n")
 	builder.WriteString(body)
-	return []byte(builder.String())
+	return []byte(builder.String()), true
 }
 
+// equalNodes compares two nodes structurally. Comparing marshalled bytes would
+// treat a quoting- or comment-only edit as a content change, and two distinct
+// unmarshalable nodes as equal.
 func equalNodes(left, right *yaml.Node) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
-	return encode(left) == encode(right)
-}
-
-func encode(node *yaml.Node) string {
-	encoded, err := yaml.Marshal(node)
-	if err != nil {
-		return ""
+	if left.Kind != right.Kind || left.Tag != right.Tag || left.Value != right.Value {
+		return false
 	}
-	return string(encoded)
+	if len(left.Content) != len(right.Content) {
+		return false
+	}
+	for i := range left.Content {
+		if !equalNodes(left.Content[i], right.Content[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func scalarValue(node *yaml.Node) string {
