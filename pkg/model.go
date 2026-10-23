@@ -13,6 +13,7 @@ type TaskItem struct {
 	Status   string   `json:"status"`
 	Phase    string   `json:"phase"`
 	TaskType string   `json:"task_type"`
+	Stage    string   `json:"stage"`
 	Assignee string   `json:"assignee"`
 	Goals    []string `json:"goals"`
 	Cluster  *string  `json:"cluster"`
