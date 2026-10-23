@@ -115,6 +115,21 @@ var _ = Describe("GitDiffer", func() {
 		Expect(changes).To(BeEmpty())
 	})
 
+	It("reports a path containing a quote verbatim", func() {
+		// -z is what makes this work: without it git C-quotes the path and it would
+		// never match the tasks dir.
+		write(`25 Tasks/Say "hi".md`, "---\nstatus: hold\n---\n# One\n")
+		oldHead := commit("add quoted task")
+		write(`25 Tasks/Say "hi".md`, "---\nstatus: hold\n---\n# Two\n")
+		newHead := commit("edit quoted task")
+
+		changes, err := differ.Diff(ctx, oldHead, newHead)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changes).To(Equal([]vaultapi.Change{
+			{Path: `25 Tasks/Say "hi".md`, Status: vaultapi.ChangeModified},
+		}))
+	})
+
 	It("reports a non-ASCII path unquoted so it can match the tasks dir", func() {
 		// git C-quotes such a path by default, and a quoted path never matches the
 		// tasks-dir prefix — the file would be skipped silently.

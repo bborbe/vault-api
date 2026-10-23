@@ -58,9 +58,22 @@ type gitDiffer struct {
 // Diff uses diff-tree rather than diff. The vault volume is mounted read-only
 // and `git diff` refreshes the index, which needs a write; diff-tree compares two
 // committed trees and touches no working-tree state.
+//
+// -z is what makes the paths trustworthy: without it git C-quotes any path holding
+// a quote, a backslash or a control character, and a quoted path matches neither
+// the tasks-dir prefix nor the .md suffix, so that task would be skipped silently.
 func (d *gitDiffer) Diff(ctx context.Context, oldHead string, newHead string) ([]Change, error) {
 	started := time.Now()
-	out, err := d.git(ctx, "diff-tree", "-r", "--no-commit-id", "--name-status", oldHead, newHead)
+	out, err := d.git(
+		ctx,
+		"diff-tree",
+		"-r",
+		"--no-commit-id",
+		"--name-status",
+		"-z",
+		oldHead,
+		newHead,
+	)
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "diff %s..%s failed", oldHead, newHead)
 	}
@@ -94,18 +107,13 @@ func (d *gitDiffer) git(ctx context.Context, args ...string) (string, error) {
 	// The vault path is passed explicitly rather than inherited from the process
 	// working directory: the pod's cwd is not the vault, and a bare `git` would
 	// walk up from it and fail or, worse, read another repository.
-	baseArgs := make([]string, 0, 6+len(args))
+	baseArgs := make([]string, 0, 4+len(args))
 	baseArgs = append(
 		baseArgs,
 		"--git-dir",
 		filepath.Join(d.vaultPath, ".git"),
 		"--work-tree",
 		d.vaultPath,
-		// Without this, git C-quotes any non-ASCII path (25 Tasks/K\303\244se.md),
-		// which never matches the tasks-dir prefix, so the file would be skipped
-		// silently instead of emitting.
-		"-c",
-		"core.quotepath=false",
 	)
 	// #nosec G204 -- the binary is the literal "git" and every argument is built
 	// here from the configured vault path or from a commit SHA the caller read out
@@ -126,30 +134,45 @@ func (d *gitDiffer) git(ctx context.Context, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// parseNameStatus turns `git diff-tree --name-status` output into changes.
+// parseNameStatus turns `git diff-tree --name-status -z` output into changes.
 //
-// A rename or copy entry carries two paths; the vault is never diffed with -M or
-// -C so this is a guard rather than a live case, and the last field wins (the new
-// path) because that is the one a later commit will still have.
+// -z separates every field with NUL, so a path containing a quote, a backslash or a
+// newline arrives verbatim instead of C-quoted. A rename or copy entry carries two
+// paths and becomes the delete+add pair it semantically is; the vault is never
+// diffed with -M, so that is a guard rather than a live case.
 func parseNameStatus(ctx context.Context, out string) ([]Change, error) {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	changes := make([]Change, 0, len(lines))
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
+	fields := strings.Split(out, "\x00")
+	changes := make([]Change, 0, len(fields)/2)
+	for i := 0; i < len(fields); {
+		status := strings.TrimSpace(fields[i])
+		if status == "" {
+			i++
 			continue
 		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 2 {
-			return nil, errors.Errorf(ctx, "unexpected diff-tree line %q", line)
+		if strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C") {
+			if i+2 >= len(fields) {
+				return nil, errors.Errorf(
+					ctx,
+					"diff-tree entry %q has fewer than two paths",
+					status,
+				)
+			}
+			changes = append(
+				changes,
+				Change{Path: fields[i+1], Status: ChangeDeleted},
+				Change{Path: fields[i+2], Status: ChangeAdded},
+			)
+			i += 3
+			continue
 		}
-		path := fields[len(fields)-1]
-		if path == "" {
-			return nil, errors.Errorf(ctx, "diff-tree line %q has no path", line)
+		if i+1 >= len(fields) {
+			return nil, errors.Errorf(ctx, "diff-tree entry %q has no path", status)
 		}
-		changes = append(changes, Change{
-			Path:   path,
-			Status: statusOf(fields[0]),
-		})
+		if fields[i+1] == "" {
+			return nil, errors.Errorf(ctx, "diff-tree entry %q has an empty path", status)
+		}
+		changes = append(changes, Change{Path: fields[i+1], Status: statusOf(status)})
+		i += 2
 	}
 	return changes, nil
 }

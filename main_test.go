@@ -103,6 +103,25 @@ var _ = Describe("publishChanges", func() {
 		Expect(built).To(Equal(1))
 	})
 
+	It("abandons a batch that keeps failing so one poison event cannot wedge the stream", func() {
+		emitter := &fakeEmitter{err: errors.New("message too large")}
+		publisher := newPublisher(emitter, nil)
+
+		// The first two attempts keep the baseline, so the range is retried.
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "bbbbbbb2")).
+			To(Equal("aaaaaaa1"))
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "bbbbbbb2")).
+			To(Equal("aaaaaaa1"))
+
+		// The third gives up on the range and moves on, so later changes still publish.
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "bbbbbbb2")).
+			To(Equal("bbbbbbb2"))
+
+		emitter.err = nil
+		Expect(publishChanges(context.Background(), publisher, "bbbbbbb2", "ccccccc3")).
+			To(Equal("ccccccc3"))
+	})
+
 	It("publishes nothing when no producer is configured", func() {
 		// No brokers configured: the loop still runs, it just publishes nothing.
 		Expect(

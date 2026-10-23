@@ -130,7 +130,17 @@ type changePublisher struct {
 	factory func(ctx context.Context) (vaultapi.Emitter, func() error, error)
 	emitter vaultapi.Emitter
 	close   func() error
+
+	// A single event that always fails — a payload over the broker's
+	// message.max.bytes is the concrete case — would otherwise hold the baseline
+	// forever and silently stop every later change from publishing. After
+	// maxPublishRetries attempts on the same range the range is abandoned with an
+	// error line, so one poison event cannot wedge the stream.
+	attempts int
+	rangeKey string
 }
+
+const maxPublishRetries = 3
 
 func (p *changePublisher) get(ctx context.Context) vaultapi.Emitter {
 	if p == nil || p.factory == nil {
@@ -147,6 +157,22 @@ func (p *changePublisher) get(ctx context.Context) vaultapi.Emitter {
 	p.emitter = emitter
 	p.close = closePublisher
 	return p.emitter
+}
+
+// fail records a failed attempt on rangeKey and reports whether the range should
+// be abandoned rather than retried again.
+func (p *changePublisher) fail(rangeKey string) bool {
+	if p.rangeKey != rangeKey {
+		p.rangeKey = rangeKey
+		p.attempts = 0
+	}
+	p.attempts++
+	return p.attempts >= maxPublishRetries
+}
+
+func (p *changePublisher) succeeded() {
+	p.attempts = 0
+	p.rangeKey = ""
 }
 
 func (p *changePublisher) closeIfOpen() {
@@ -232,8 +258,26 @@ func publishChanges(
 		return emittedHead
 	}
 	if err := emitter.Emit(ctx, emittedHead, current); err != nil {
-		glog.Warningf("publish changes %s..%s failed: %v", emittedHead, current, err)
+		rangeKey := emittedHead + ".." + current
+		if publisher.fail(rangeKey) {
+			glog.Errorf(
+				"abandoning change batch %s after %d failed attempts; later changes resume from %s: %v",
+				rangeKey,
+				maxPublishRetries,
+				current,
+				err,
+			)
+			return current
+		}
+		glog.Warningf(
+			"publish changes %s failed (attempt %d/%d): %v",
+			rangeKey,
+			publisher.attempts,
+			maxPublishRetries,
+			err,
+		)
 		return emittedHead
 	}
+	publisher.succeeded()
 	return current
 }

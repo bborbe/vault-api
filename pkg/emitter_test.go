@@ -47,17 +47,20 @@ func (f *fakeDiffer) ReadAt(_ context.Context, head string, path string) ([]byte
 type fakePublisher struct {
 	changed    []lib.Task
 	deleted    []lib.TaskIdentifier
+	order      []string
 	changedErr error
 	deletedErr error
 }
 
 func (f *fakePublisher) PublishChanged(_ context.Context, task lib.Task) error {
 	f.changed = append(f.changed, task)
+	f.order = append(f.order, "changed")
 	return f.changedErr
 }
 
 func (f *fakePublisher) PublishDeleted(_ context.Context, id lib.TaskIdentifier) error {
 	f.deleted = append(f.deleted, id)
+	f.order = append(f.order, "deleted")
 	return f.deletedErr
 }
 
@@ -144,6 +147,20 @@ var _ = Describe("Emitter", func() {
 			Expect(differ.readAtPath).To(Equal("25 Tasks/Probe Task.md"))
 			Expect(publisher.deleted).To(Equal([]lib.TaskIdentifier{probeIdentifier}))
 			Expect(publisher.changed).To(BeEmpty())
+		})
+
+		It("publishes tombstones before upserts so a rename cannot remove the task", func() {
+			// A rename arrives as add(new) + delete(old) sharing one identifier.
+			// Upsert-then-tombstone would drop the task from a compacted view.
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/New Name.md", Status: vaultapi.ChangeAdded},
+				{Path: "25 Tasks/Old Name.md", Status: vaultapi.ChangeDeleted},
+			}
+			differ.readAtContent = []byte(taskFile)
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
+
+			Expect(publisher.order).To(Equal([]string{"deleted", "changed"}))
 		})
 
 		It("skips a file whose frontmatter does not parse without failing the batch", func() {

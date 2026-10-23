@@ -60,7 +60,7 @@ func (e *emitter) Emit(ctx context.Context, oldHead string, newHead string) erro
 	if err != nil {
 		return err
 	}
-	for _, change := range changes {
+	for _, change := range deletionsFirst(changes) {
 		// Each iteration publishes, which can block on the broker; stop promptly
 		// when the process is shutting down rather than draining the whole diff.
 		if err := ctx.Err(); err != nil {
@@ -122,6 +122,25 @@ func (e *emitter) content(
 		return e.differ.ReadAt(ctx, oldHead, change.Path)
 	}
 	return e.differ.ReadAt(ctx, newHead, change.Path)
+}
+
+// deletionsFirst orders tombstones ahead of upserts. A rename arrives as a delete
+// of the old path plus an add of the new one, and both resolve to the same task
+// identifier; publishing the upsert first and the tombstone second would remove
+// the task from a compacted consumer view.
+func deletionsFirst(changes []Change) []Change {
+	ordered := make([]Change, 0, len(changes))
+	for _, change := range changes {
+		if change.Status == ChangeDeleted {
+			ordered = append(ordered, change)
+		}
+	}
+	for _, change := range changes {
+		if change.Status != ChangeDeleted {
+			ordered = append(ordered, change)
+		}
+	}
+	return ordered
 }
 
 func (e *emitter) isTaskPath(path string) bool {
