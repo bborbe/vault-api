@@ -8,10 +8,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 
 	libtime "github.com/bborbe/time"
 	. "github.com/onsi/ginkgo/v2"
@@ -139,6 +141,86 @@ var _ = Describe("Merge endpoint", func() {
 		decoded := decode(recorder)
 		Expect(decoded["error"]).To(Equal("invalid_body"))
 		Expect(decoded["reason"]).To(Equal("base.committer_time must be RFC3339"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("answers 502 when git-rest refuses the write", func() {
+		writer.err = errors.New("git-rest answered 409: conflict")
+
+		recorder := call(map[string]any{
+			"path": "25 Tasks/Alpha.md",
+			"base": side(
+				"---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z",
+			),
+			"ours": side(
+				"---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z",
+			),
+			"theirs": side(
+				"---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z",
+			),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusBadGateway))
+		Expect(decode(recorder)["error"]).To(Equal("git_rest_failed"))
+	})
+
+	It("refuses a request with no gateway secret", func() {
+		encoded, err := json.Marshal(map[string]any{
+			"path":   "25 Tasks/Alpha.md",
+			"base":   side("---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z"),
+			"ours":   side("---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z"),
+			"theirs": side("---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z"),
+		})
+		Expect(err).To(BeNil())
+		request := httptest.NewRequest(
+			http.MethodPost, "/api/v1/merge", bytes.NewBuffer(encoded),
+		)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+
+		Expect(recorder.Code).To(Equal(http.StatusUnauthorized))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("accepts three file contents larger than the write endpoints' cap", func() {
+		// The write endpoints cap at 64 KiB because they carry a phase name and
+		// an approver. A merge carries three whole files, so a body the write
+		// endpoints would reject must still be accepted here.
+		bulk := strings.Repeat("x", 100*1024)
+
+		recorder := call(map[string]any{
+			"path":   "25 Tasks/Alpha.md",
+			"base":   side("---\ntitle: Base\n---\n"+bulk+"\n", "2026-10-20T10:00:00Z"),
+			"ours":   side("---\ntitle: Ours\n---\n"+bulk+"\n", "2026-10-22T10:00:00Z"),
+			"theirs": side("---\ntitle: Theirs\n---\n"+bulk+"\n", "2026-10-21T10:00:00Z"),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		Expect(decode(recorder)["result"]).To(Equal("merged"))
+	})
+
+	It("refuses a path that escapes the vault", func() {
+		recorder := call(map[string]any{
+			"path":   "25 Tasks/../../etc/passwd",
+			"base":   side("---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z"),
+			"ours":   side("---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z"),
+			"theirs": side("---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z"),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+		Expect(decode(recorder)["reason"]).To(Equal("path must not contain a .. segment"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("reports an omitted side as required, not as a malformed time", func() {
+		recorder := call(map[string]any{
+			"path":   "25 Tasks/Alpha.md",
+			"ours":   side("---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z"),
+			"theirs": side("---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z"),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+		Expect(decode(recorder)["reason"]).To(Equal("base is required"))
 		Expect(writer.calls).To(BeEmpty())
 	})
 

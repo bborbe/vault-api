@@ -6,6 +6,7 @@ package vaultapi_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,6 +26,14 @@ type countingWriter struct {
 func (c *countingWriter) WriteFile(_ context.Context, _ string, _ []byte) error {
 	c.writes++
 	return nil
+}
+
+// failingWriter refuses every write, so the specs can prove a failed merge
+// logs nothing.
+type failingWriter struct{}
+
+func (failingWriter) WriteFile(_ context.Context, _ string, _ []byte) error {
+	return errors.New("git-rest unavailable")
 }
 
 var _ = Describe("ResolveDivergedPull merge log", func() {
@@ -131,6 +140,31 @@ var _ = Describe("ResolveDivergedPull merge log", func() {
 		Expect(err).To(BeNil())
 		Expect(reason).To(Equal(vaultapi.MergeReason("")))
 		Expect(writer.writes).To(Equal(1))
+		Expect(lines).To(BeEmpty())
+	})
+
+	It("emits no line when the write fails", func() {
+		ours := vaultapi.Side{
+			Content: []byte(
+				"---\nphase: execution\nstatus: next\ntitle: Base\n---\nbody line\n",
+			),
+			CommitterTime: time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC),
+		}
+		theirs := vaultapi.Side{
+			Content: []byte(
+				"---\nphase: planning\nstatus: next\ntitle: Changed\n---\nbody line\n",
+			),
+			CommitterTime: time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC),
+		}
+
+		reason, err := vaultapi.ResolveDivergedPull(
+			ctx, failingWriter{}, "25 Tasks/Alpha.md", base, ours, theirs,
+		)
+
+		// A merge that could not be written is not a resolved file: the marker
+		// must not claim one happened.
+		Expect(err).NotTo(BeNil())
+		Expect(reason).To(Equal(vaultapi.MergeReason("")))
 		Expect(lines).To(BeEmpty())
 	})
 })

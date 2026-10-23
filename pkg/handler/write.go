@@ -279,13 +279,26 @@ func (d document) write(
 	})
 }
 
-// decodeBody reads a JSON body, answering 400 when it is not one.
+// decodeBody reads a JSON body capped at the write endpoints' limit, answering
+// 400 when it is not one.
 func decodeBody(
 	w http.ResponseWriter,
 	r *http.Request,
 	target any,
 ) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWriteBodyBytes))
+	return decodeBodyLimited(w, r, target, maxWriteBodyBytes)
+}
+
+// decodeBodyLimited reads a JSON body capped at limit bytes. The merge endpoint
+// carries three complete file contents, so it cannot share the write endpoints'
+// cap, which was chosen for a phase name, a status name and an approver.
+func decodeBodyLimited(
+	w http.ResponseWriter,
+	r *http.Request,
+	target any,
+	limit int64,
+) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	if err := decoder.Decode(target); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":  "invalid_body",
