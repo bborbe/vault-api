@@ -37,13 +37,6 @@ type Metrics interface {
 // process, and vault keeps two instances of the same stage from merging their
 // per-type counts into one series at query time.
 func NewMetrics(stage string, vault string) Metrics {
-	return newMetrics(prometheus.DefaultRegisterer, stage, vault)
-}
-
-// newMetrics builds the metrics against an explicit registerer so tests can use
-// a private registry instead of the process-global one. It returns the concrete
-// type so callers that need the unexported vecs (tests) need no assertion.
-func newMetrics(reg prometheus.Registerer, stage string, vault string) *metrics {
 	m := &metrics{
 		fileReads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_api_file_reads_total",
@@ -58,7 +51,7 @@ func newMetrics(reg prometheus.Registerer, stage string, vault string) *metrics 
 			},
 		}, []string{"task_type"}),
 	}
-	reg.MustRegister(m.fileReads, m.openTasks)
+	prometheus.MustRegister(m.fileReads, m.openTasks)
 	for _, kind := range []string{FileReadKindList, FileReadKindRead} {
 		m.fileReads.WithLabelValues(kind).Add(0)
 	}
