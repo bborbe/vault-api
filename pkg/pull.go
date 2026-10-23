@@ -5,10 +5,24 @@
 package vaultapi
 
 import (
+	"bytes"
 	"context"
+	"time"
 
 	"github.com/bborbe/errors"
+	"github.com/golang/glog"
 )
+
+// MergeMarker prefixes every resolved-merge log line. It is a fixed literal
+// rather than a configurable one so a probe can grep for exactly one string: a
+// marker the caller chooses is a marker the caller's own probe can be written
+// to match.
+const MergeMarker = "pull: merged"
+
+// MergeLog records one resolved merge. It is a variable rather than a direct
+// glog call so the specs can assert the line without depending on glog's file
+// sinks, which offer no capture hook. Production never reassigns it.
+var MergeLog = glog.Infof
 
 // FileWriter writes one complete file back to the vault. It is satisfied by the
 // git-rest client the write endpoints use, so a resolved pull lands the same way
@@ -38,5 +52,25 @@ func ResolveDivergedPull(
 	if err := writer.WriteFile(ctx, path, result.Content); err != nil {
 		return "", errors.Wrap(ctx, err, "write merged file")
 	}
+	// Only a file both sides changed is a merge worth recording. When either
+	// side still equals the base, nothing diverged: writing the winning side is
+	// right, but logging it would make the line indistinguishable from a real
+	// reconciliation, and a probe could no longer tell a merge from a no-op.
+	if bytes.Equal(ours.Content, base.Content) || bytes.Equal(theirs.Content, base.Content) {
+		return "", nil
+	}
+	// V0 rather than V(1): a resolved merge is a state change an operator has to
+	// see without turning on a verbosity flag. It is the only record that two
+	// writers' edits were reconciled instead of one silently overwriting the
+	// other, and it fires only on a genuine divergence, so it cannot flood the
+	// log. Emitted after the write succeeds, so a failed write logs nothing and
+	// "one line per resolved file" stays literally true.
+	MergeLog(
+		"%s path=%s ours_committer_time=%s theirs_committer_time=%s",
+		MergeMarker,
+		path,
+		ours.CommitterTime.Format(time.RFC3339),
+		theirs.CommitterTime.Format(time.RFC3339),
+	)
 	return "", nil
 }

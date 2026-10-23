@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: Add `POST /api/v1/merge`, the production caller of `ResolveDivergedPull`. It takes the three sides of a diverged file — `base`, `ours` and `theirs`, each with its committer time — resolves them per frontmatter key and writes the merged bytes through git-rest, answering `{"result":"merged"}` or `{"result":"quarantined","reason":…}`. The seam had shipped since v0.6.0 with no caller, so no running path ever invoked the merge; the endpoint supplies one without making `vault-api` a puller, which it is not — git-rest pulls and the refresh loop only compares HEAD.
+- feat: Log one `pull: merged` line per genuinely reconciled file, naming the path and both sides' committer times, so a merge the API performed is distinguishable from one git-rest resolved on its own. The line is emitted only when both sides changed relative to the base and only after the write succeeds: a quarantined merge, a fast-forward and a failed write each log nothing, so the marker cannot be satisfied by an unconditional log.
+
 ## v0.6.1
 
 - fix: send the `X-Gateway-Initator` header on every git-rest write. git-rest's auth middleware answers **500** when that header is missing, and it checks it *before* the secret — so every write in v0.6.0 failed with `git_rest_failed` against a real git-rest. The misspelling is deliberate and part of git-rest's frozen public contract; the value is `vault-api`. Found by running the SC probes against the released binary and a local git-rest, not by the unit tests, which stop at a fake writer and never cross the real boundary.

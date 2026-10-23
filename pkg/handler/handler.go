@@ -64,6 +64,9 @@ func NewHandler(
 	api.Path("/tasks/{id}/approve").
 		Methods(http.MethodPost).
 		HandlerFunc(handleApprove(deps))
+	api.Path("/merge").
+		Methods(http.MethodPost).
+		HandlerFunc(handleMerge(deps))
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
 
