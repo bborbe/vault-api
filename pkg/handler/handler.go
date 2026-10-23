@@ -39,7 +39,13 @@ func NewHandler(
 	writer gitrest.Client,
 	clock libtime.CurrentDateTime,
 ) http.Handler {
-	deps := writeDeps{index: index, vaultPath: vaultPath, writer: writer, clock: clock}
+	deps := writeDeps{
+		index:         index,
+		vaultPath:     vaultPath,
+		writer:        writer,
+		clock:         clock,
+		gatewaySecret: gatewaySecret,
+	}
 
 	router := mux.NewRouter()
 	router.Path("/healthz").Handler(libhttp.NewPrintHandler("OK"))

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
 )
@@ -57,6 +58,20 @@ type mergeResponse struct {
 func handleMerge(deps writeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		// This route writes caller-supplied content to a vault-relative path — a
+		// strictly larger blast radius than the other write endpoints, which
+		// resolve their target through the index and enforce the phase and status
+		// graphs. So it refuses to run without a gateway secret instead of
+		// inheriting the group's "empty secret = no auth" contract, which for this
+		// route would mean an unauthenticated arbitrary vault write.
+		if deps.gatewaySecret == "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "merge_requires_gateway_secret",
+				"reason": "POST /api/v1/merge writes caller-supplied content " +
+					"and requires GATEWAY_SECRET to be set",
+			})
+			return
+		}
 		var request mergeRequest
 		if !decodeBodyLimited(w, r, &request, maxMergeBodyBytes) {
 			return
@@ -126,8 +141,15 @@ func mergePathError(raw string) string {
 		return "path must not carry leading or trailing whitespace"
 	case strings.HasPrefix(raw, "/"):
 		return "path must be vault-relative"
-	case strings.ContainsAny(raw, "\n\r\t"):
-		return "path must not contain control characters"
+	}
+	// Every control character, not just the three obvious ones: NUL, ESC, VT,
+	// FF and DEL would otherwise reach the log line and the git-rest URL, and
+	// U+2028/U+2029 are line breaks to some log readers though not to
+	// unicode.IsControl.
+	for _, r := range raw {
+		if unicode.IsControl(r) || r == ' ' || r == ' ' {
+			return "path must not contain control characters"
+		}
 	}
 	// Before the cleanliness check: path.Clean collapses "25 Tasks/../../etc"
 	// to "../etc", so the general message would fire first and hide the

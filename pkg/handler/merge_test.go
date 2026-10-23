@@ -212,6 +212,44 @@ var _ = Describe("Merge endpoint", func() {
 		Expect(writer.calls).To(BeEmpty())
 	})
 
+	It("refuses to run when no gateway secret is configured", func() {
+		// Every other route treats an empty secret as "no auth". This one writes
+		// caller-supplied content to an arbitrary vault-relative path, so it fails
+		// closed rather than becoming an unauthenticated vault write.
+		openRouter := handler.NewHandler(
+			ctx, index, "", vaultPath, writer, libtime.NewCurrentDateTime(),
+		)
+		encoded, err := json.Marshal(map[string]any{
+			"path":   "25 Tasks/Alpha.md",
+			"base":   side("---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z"),
+			"ours":   side("---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z"),
+			"theirs": side("---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z"),
+		})
+		Expect(err).To(BeNil())
+		request := httptest.NewRequest(
+			http.MethodPost, "/api/v1/merge", bytes.NewBuffer(encoded),
+		)
+		recorder := httptest.NewRecorder()
+		openRouter.ServeHTTP(recorder, request)
+
+		Expect(recorder.Code).To(Equal(http.StatusServiceUnavailable))
+		Expect(decode(recorder)["error"]).To(Equal("merge_requires_gateway_secret"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("refuses a path carrying a control character", func() {
+		recorder := call(map[string]any{
+			"path":   "25 Tasks/Al\x00pha.md",
+			"base":   side("---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z"),
+			"ours":   side("---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z"),
+			"theirs": side("---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z"),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+		Expect(decode(recorder)["reason"]).To(Equal("path must not contain control characters"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
 	It("reports an omitted side as required, not as a malformed time", func() {
 		recorder := call(map[string]any{
 			"path":   "25 Tasks/Alpha.md",

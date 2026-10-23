@@ -30,10 +30,11 @@ const maxWriteBodyBytes = 64 * 1024
 // to a path, the vault path supplies the original bytes, the writer sends the
 // rendered file to git-rest, and the clock stamps an approval.
 type writeDeps struct {
-	index     *vaultapi.Index
-	vaultPath string
-	writer    gitrest.Client
-	clock     libtime.CurrentDateTime
+	index         *vaultapi.Index
+	vaultPath     string
+	writer        gitrest.Client
+	clock         libtime.CurrentDateTime
+	gatewaySecret string
 }
 
 // phaseRequest is the body of PATCH /api/v1/tasks/{id}/phase. ApprovedBy is a
