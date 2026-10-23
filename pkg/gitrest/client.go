@@ -23,6 +23,17 @@ import (
 // HeaderGatewaySecret is the header git-rest reads the shared secret from.
 const HeaderGatewaySecret = "X-Gateway-Secret"
 
+// HeaderGatewayInitator is the caller-identity header git-rest's auth middleware
+// requires to be non-empty — it answers 500 when the header is missing, before it
+// ever checks the secret. The misspelling (missing the second "i") is deliberate
+// and part of git-rest's frozen public contract, so it is reproduced verbatim.
+const HeaderGatewayInitator = "X-Gateway-Initator"
+
+// Initiator is the value this client sends in HeaderGatewayInitator. git-rest
+// only checks that the header is non-empty; the value is what its request log
+// records as the caller.
+const Initiator = "vault-api"
+
 // Client writes one complete file through git-rest.
 type Client interface {
 	// WriteFile replaces path with content. git-rest answers {"ok":true} and no
@@ -76,6 +87,9 @@ func (c *client) WriteFile(ctx context.Context, path string, content []byte) err
 		return errors.Wrap(ctx, err, "build git-rest request")
 	}
 	request.Header.Set("Content-Type", "text/markdown; charset=utf-8")
+	// git-rest refuses the request outright when this is missing, so it is set
+	// unconditionally — it is caller identity, not a credential.
+	request.Header.Set(HeaderGatewayInitator, Initiator)
 	if c.gatewaySecret != "" {
 		request.Header.Set(HeaderGatewaySecret, c.gatewaySecret)
 	}
