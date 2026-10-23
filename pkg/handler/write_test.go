@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,9 +51,13 @@ type writeCall struct {
 // these tests assert on: the rendered bytes never reach a real git-rest.
 type fakeWriter struct {
 	calls []writeCall
+	err   error
 }
 
 func (f *fakeWriter) WriteFile(_ context.Context, path string, content []byte) error {
+	if f.err != nil {
+		return f.err
+	}
 	f.calls = append(f.calls, writeCall{path: path, content: string(content)})
 	return nil
 }
@@ -213,6 +218,21 @@ var _ = Describe("Write endpoints", func() {
 			Expect(writer.calls).To(BeEmpty())
 		})
 
+		It("reports a git-rest failure as a bad gateway", func() {
+			seed("status: next\nphase: planning\n" +
+				"task_identifier: " + taskIdentifier + "\n")
+			writer.err = errors.New("git-rest unreachable")
+
+			recorder := call(
+				http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/phase",
+				`{"phase":"execution"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusBadGateway))
+			Expect(decode(recorder)["error"]).To(Equal("git_rest_failed"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
 		It("refuses leaving the approval inbox without an approve call", func() {
 			seed("status: todo\nphase: todo\n" +
 				"task_identifier: " + taskIdentifier + "\n")
@@ -329,6 +349,31 @@ var _ = Describe("Write endpoints", func() {
 			Expect(recorder.Code).To(Equal(http.StatusOK))
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].content).To(ContainSubstring("assignee: operator\n"))
+		})
+
+		It("refuses a clock that is not an instant", func() {
+			seed("status: next\nphase: todo\n" +
+				"task_identifier: " + taskIdentifier + "\n")
+			// An unset clock falls back to the wall clock, so the zero instant has
+			// to be set explicitly — it is the case the approve guard exists for: a
+			// placeholder is not a measurement.
+			zero := libtime.NewCurrentDateTime()
+			zero.SetNow(libtime.DateTime{})
+			zeroClock := handler.NewHandler(
+				ctx, index, secret, vaultPath, writer, zero,
+			)
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/tasks/"+taskIdentifier+"/approve",
+				bytes.NewBufferString(`{"approved_by":"operator"}`),
+			)
+			request.Header.Set("X-Gateway-Secret", secret)
+			recorder := httptest.NewRecorder()
+			zeroClock.ServeHTTP(recorder, request)
+
+			Expect(recorder.Code).To(Equal(http.StatusInternalServerError))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_clock"))
+			Expect(writer.calls).To(BeEmpty())
 		})
 
 		It("refuses a blank approver", func() {
