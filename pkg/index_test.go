@@ -9,11 +9,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bborbe/vault-cli/pkg/storage"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
-	"github.com/bborbe/vault-cli/pkg/storage"
 )
 
 var _ = Describe("Index", func() {
@@ -50,7 +50,7 @@ var _ = Describe("Index", func() {
 			VaultName: "test",
 			TasksDir:  "25 Tasks",
 			GoalsDir:  "24 Goals",
-		})
+		}, metrics)
 	})
 
 	AfterEach(func() {
@@ -135,7 +135,11 @@ var _ = Describe("Index", func() {
 	})
 
 	It("indexes goals with their themes", func() {
-		writeFile(goalsDir, "A Goal", "---\npage_type: goal\nstatus: next\nthemes:\n    - '[[Leverage Autonomous Agents]]'\n---\n\nBody\n")
+		writeFile(
+			goalsDir,
+			"A Goal",
+			"---\npage_type: goal\nstatus: next\nthemes:\n    - '[[Leverage Autonomous Agents]]'\n---\n\nBody\n",
+		)
 		Expect(index.Build(ctx, store)).To(Succeed())
 
 		goals, warnings, _ := index.QueryGoals()
@@ -150,14 +154,45 @@ var _ = Describe("Index", func() {
 		Expect(found).To(BeTrue())
 		Expect(goal.ID).To(Equal("a-goal"))
 	})
+
+	It("counts open tasks per task_type and refreshes the gauge on every build", func() {
+		writeFile(tasksDir, "Alpha", taskFrontmatter("status: in_progress", "task_type: pr-review"))
+		writeFile(tasksDir, "Beta", taskFrontmatter("status: next", "task_type: pr-review"))
+		writeFile(tasksDir, "Gamma", taskFrontmatter("status: completed", "task_type: pr-review"))
+		writeFile(tasksDir, "Delta", taskFrontmatter("status: aborted", "task_type: pr-review"))
+		writeFile(
+			tasksDir,
+			"Epsilon",
+			taskFrontmatter("status: in_progress", "task_type: github-release"),
+		)
+		writeFile(tasksDir, "Zeta", taskFrontmatter("status: in_progress"))
+		writeFile(tasksDir, "Eta", taskFrontmatter("phase: execution"))
+		Expect(index.Build(ctx, store)).To(Succeed())
+
+		// completed and aborted are excluded; a task with no task_type and one
+		// with no status line both count as open, under the unknown bucket.
+		Expect(metrics.openTasks).To(Equal(map[string]int{
+			"pr-review":      2,
+			"github-release": 1,
+			"unknown":        2,
+		}))
+		Expect(metrics.setCalls).To(Equal(1))
+	})
 })
 
 type testMetrics struct {
-	reads map[string]int64
+	reads     map[string]int64
+	openTasks map[string]int
+	setCalls  int
 }
 
 func (m *testMetrics) AddFileReads(kind string, count int64) {
 	m.reads[kind] += count
+}
+
+func (m *testMetrics) SetOpenTasks(counts map[string]int) {
+	m.setCalls++
+	m.openTasks = counts
 }
 
 func taskFrontmatter(lines ...string) string {
