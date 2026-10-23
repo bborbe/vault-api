@@ -286,18 +286,23 @@ func (d document) write(
 	}
 	// The file has landed in git, so the response is already decided: a publish
 	// failure must not turn a write that happened into an error the client retries,
-	// because that retry would be refused as an already-applied transition. Log it
-	// and answer 200 — the pull path republishes the same change from the commit
-	// diff, so the stream converges without the caller.
+	// because that retry would be refused as an already-applied transition.
 	//
-	// Bounded, because the deferred handle only covers startup: a broker that goes
-	// unreachable later must not hold this request open past a response that is
-	// already decided.
-	publishCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	// That makes the event best-effort, and it is: a failed publish is logged and
+	// the change is lost, not recovered. The pull path that would republish from the
+	// commit diff is not on master yet, so until it lands a broker outage or a
+	// timeout leaves a consumer's view stale for that task. Publishing under
+	// WithoutCancel keeps a client hanging up from being one of those causes — only
+	// the timeout can end it.
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
 	err = deps.publisher.PublishChanged(publishCtx, d.task(deps.vault))
 	cancel()
 	if err != nil {
-		glog.Errorf("publish change event for task %s failed: %v", d.item.Path, err)
+		glog.Errorf(
+			"publish change event for task %s failed and the event is lost: %v",
+			d.item.Path,
+			err,
+		)
 	}
 	writeJSON(w, http.StatusOK, writeResponse{
 		ID:     d.item.ID,
@@ -332,7 +337,9 @@ func taskBody(raw string) string {
 	if end < 0 {
 		return ""
 	}
-	return strings.TrimPrefix(rest[end+len("---")+1:], "\n")
+	// Both line endings, because a vault checked out on a machine with autocrlf can
+	// carry CRLF and the event body must not start with a stray \r.
+	return strings.TrimPrefix(strings.TrimPrefix(rest[end+len("---")+1:], "\r"), "\n")
 }
 
 // decodeBody reads a JSON body, answering 400 when it is not one.

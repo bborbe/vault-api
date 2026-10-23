@@ -96,6 +96,27 @@ var _ = Describe("Deferred", func() {
 		Expect(discard.PublishDeleted(ctx, "task-2")).To(Succeed())
 	})
 
+	It("publishes correctly while the builder installs the publisher", func() {
+		// The production pattern: the background builder calls Set while requests are
+		// already publishing. Race-freedom is the whole point of the atomic holder.
+		deferred := publisher.NewDeferred()
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+			for range 100 {
+				// Either ErrNotReady or success is correct here; a panic or a data race
+				// is not.
+				_ = deferred.PublishChanged(ctx, lib.Task{})
+			}
+		}()
+		deferred.Set(&recordingPublisher{})
+		Eventually(done).Should(BeClosed())
+
+		Expect(deferred.Ready()).To(BeTrue())
+		Expect(deferred.PublishChanged(ctx, lib.Task{TaskIdentifier: "after"})).To(Succeed())
+	})
+
 	It("keeps the not-ready error a plain sentinel", func() {
 		// A not-ready publish must not read as a permanent broker rejection: a
 		// publisher that is merely still starting would then burn a caller's retry

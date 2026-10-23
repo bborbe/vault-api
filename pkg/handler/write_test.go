@@ -67,14 +67,16 @@ func (f *fakeWriter) WriteFile(_ context.Context, path string, content []byte) e
 // recordingPublisher records the change events a write produced. It is the seam
 // that proves a landed write reaches the task topic without a broker in the test.
 type recordingPublisher struct {
-	changed []lib.Task
-	deleted []lib.TaskIdentifier
-	err     error
+	changed     []lib.Task
+	deleted     []lib.TaskIdentifier
+	err         error
+	hadDeadline bool
 }
 
 var _ publisher.TaskPublisher = (*recordingPublisher)(nil)
 
-func (r *recordingPublisher) PublishChanged(_ context.Context, task lib.Task) error {
+func (r *recordingPublisher) PublishChanged(ctx context.Context, task lib.Task) error {
+	_, r.hadDeadline = ctx.Deadline()
 	if r.err != nil {
 		return r.err
 	}
@@ -220,6 +222,11 @@ var _ = Describe("Write endpoints", func() {
 			Expect(event.Frontmatter["phase"]).To(Equal("execution"))
 			// The body is carried unchanged: a write re-renders only the frontmatter.
 			Expect(event.Content).To(Equal(lib.TaskContent(taskBody)))
+			// A mutation is an upsert, never a delete: a tombstone here would drop the
+			// task from the executor's view.
+			Expect(published.deleted).To(BeEmpty())
+			// Bounded, so a broker lost after startup cannot hold the request open.
+			Expect(published.hadDeadline).To(BeTrue())
 		})
 
 		It("publishes nothing when git-rest rejects the write", func() {
@@ -330,6 +337,27 @@ var _ = Describe("Write endpoints", func() {
 			Expect(decode(recorder)["error"]).To(Equal("approval_required"))
 			Expect(writer.calls).To(BeEmpty())
 		})
+	})
+
+	It("publishes from the status and approve handlers too", func() {
+		// All three handlers call document.write, so one spec per endpoint proves the
+		// shared chokepoint is what publishes rather than the phase handler alone.
+		seed("status: next\nphase: execution\n" +
+			"task_identifier: " + taskIdentifier + "\n")
+		call(
+			http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/status",
+			`{"status":"in_progress"}`,
+		)
+		Expect(published.changed).To(HaveLen(1))
+
+		published.changed = nil
+		seed("status: todo\nphase: todo\n" +
+			"task_identifier: " + taskIdentifier + "\n")
+		call(
+			http.MethodPost, "/api/v1/tasks/"+taskIdentifier+"/approve",
+			`{"approved_by":"operator"}`,
+		)
+		Expect(published.changed).To(HaveLen(1))
 	})
 
 	Describe("PATCH /api/v1/tasks/{id}/status", func() {
