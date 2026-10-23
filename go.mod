@@ -3,6 +3,7 @@ module github.com/bborbe/vault-api
 go 1.27.3
 
 require (
+	github.com/IBM/sarama v1.61.1
 	github.com/bborbe/agent v0.120.0
 	github.com/bborbe/cqrs v0.6.13
 	github.com/bborbe/errors v1.6.4
@@ -24,7 +25,6 @@ require (
 )
 
 require (
-	github.com/IBM/sarama v1.61.1 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/bborbe/argument/v2 v2.13.6 // indirect
 	github.com/bborbe/collection v1.21.4 // indirect

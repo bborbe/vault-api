@@ -76,15 +76,29 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		glog.Warningf("initial index build failed: %v", err)
 	}
 
-	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
-	// A Deferred rather than a built publisher: NewSyncProducer blocks while a
-	// broker is unreachable, so constructing it here would make the read API's
-	// availability depend on Kafka. The handlers publish through this handle and
-	// report ErrNotReady until the background builder installs the real one.
+	// One producer for both paths: the write handlers publish through this handle and
+	// the pull feed builds its emitter over the same one, so a change reaches the
+	// topic once, published by whichever path saw it first.
+	//
+	// A Deferred rather than a built publisher: NewSyncProducer blocks while a broker
+	// is unreachable, so constructing it here would make the read API's availability
+	// depend on Kafka. publishTaskEvents installs the real one in the background, and
+	// both paths report ErrNotReady until it does.
 	taskPublisher := publisher.NewDeferred()
 
+	factory, err := a.emitterFactory(ctx, taskPublisher)
+	if err != nil {
+		return err
+	}
+	// Always a Feed, even with a nil factory: the no-broker case then still owns a
+	// baseline and simply publishes nothing, so the loop needs no nil checks.
+	feed := vaultapi.NewFeed(factory, publisher.IsPermanent)
+	defer feed.Close()
+
+	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
+
 	return run.CancelOnFirstFinish(ctx,
-		a.refresh(index, store),
+		a.refresh(index, store, feed),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
 			ctx, index, a.GatewaySecret, a.VaultPath, a.VaultName, writer,
@@ -111,12 +125,8 @@ func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 			<-ctx.Done()
 			return nil
 		}
-		// Brokers without a prefix would publish to "-agent-task-v1-event", which is
-		// a config mistake rather than a transient failure: fail loudly instead of
-		// publishing somewhere unintended.
-		if a.TopicPrefix == "" {
-			return errors.Errorf(ctx, "topic-prefix is required when kafka-brokers is set")
-		}
+		// Brokers-without-prefix is rejected by emitterFactory before this runs, so a
+		// prefix is guaranteed here and this loop only has to survive an outage.
 		for {
 			taskPublisher, closer, err := publisher.NewKafkaTaskPublisher(
 				ctx,
@@ -146,10 +156,52 @@ func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 	}
 }
 
+// emitterFactory validates the change-event config and returns a constructor, or
+// nil when no broker is configured.
+//
+// It does not build the producer: the deferred handle owns that, because
+// NewSyncProducer blocks on an unreachable broker. The factory only assembles an
+// emitter over whatever publisher the handle holds, so the pull path and the write
+// path share one producer rather than each building its own.
+func (a *application) emitterFactory(
+	ctx context.Context,
+	taskPublisher publisher.TaskPublisher,
+) (func(ctx context.Context) (vaultapi.Emitter, func() error, error), error) {
+	if a.KafkaBrokers == "" {
+		return nil, nil
+	}
+	// With brokers set but no prefix the topic would be "-agent-task-v1-event",
+	// which is a config mistake rather than a transient failure, so it fails fast
+	// and loudly instead of publishing somewhere unintended.
+	if a.TopicPrefix == "" {
+		return nil, errors.Errorf(ctx, "topic-prefix is required when kafka-brokers is set")
+	}
+	return func(ctx context.Context) (vaultapi.Emitter, func() error, error) {
+		return vaultapi.NewEmitter(
+			vaultapi.Config{
+				VaultPath: a.VaultPath,
+				VaultName: a.VaultName,
+				TasksDir:  a.TasksDir,
+				GoalsDir:  a.GoalsDir,
+			},
+			vaultapi.NewGitDiffer(a.VaultPath),
+			taskPublisher,
+		), nil, nil
+	}, nil
+}
+
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
 // first successful build has not happened yet. A steady HEAD means no file is
 // read, so the file-read counter stays flat between pulls.
-func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) run.Func {
+//
+// After rebuilding it hands the new HEAD to the feed, which publishes one change
+// event per task file that differs from the last published commit. That is what
+// makes externally pushed changes visible without the controller's git scan.
+func (a *application) refresh(
+	index *vaultapi.Index,
+	store storage.PageStorage,
+	feed vaultapi.Feed,
+) run.Func {
 	return func(ctx context.Context) error {
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
@@ -158,13 +210,18 @@ func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) 
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
+				current := vaultapi.ResolveHead(a.VaultPath)
 				ready := index.Readiness().Ready
-				if ready && index.Head() == vaultapi.ResolveHead(a.VaultPath) {
-					continue
+				if !ready || index.Head() != current {
+					if err := index.Build(ctx, store); err != nil {
+						glog.Warningf("index rebuild failed: %v", err)
+					}
 				}
-				if err := index.Build(ctx, store); err != nil {
-					glog.Warningf("index rebuild failed: %v", err)
-				}
+				// Publish after the rebuild, never before it. Building the producer
+				// blocks on an unreachable broker (sarama dials and retries), so
+				// publishing first would stall the index the read path serves for the
+				// whole dial timeout — the coupling this change exists to remove.
+				feed.Advance(ctx, current)
 			}
 		}
 	}
