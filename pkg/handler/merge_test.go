@@ -111,6 +111,60 @@ var _ = Describe("Merge endpoint", func() {
 		Expect(writer.calls[0].content).To(ContainSubstring("title: Changed"))
 	})
 
+	It("returns the merged bytes instead of writing when apply is false", func() {
+		// The puller is mid-merge holding its repository, so a write back through
+		// git-rest's own API would wait on the mutex the pull holds. It takes the
+		// bytes and stages them itself.
+		recorder := call(map[string]any{
+			"path":  "25 Tasks/Alpha.md",
+			"apply": false,
+			"base": side(
+				"---\nphase: planning\ntitle: Base\n---\nbody\n",
+				"2026-10-20T10:00:00Z",
+			),
+			"ours": side(
+				"---\nphase: execution\ntitle: Base\n---\nbody\n",
+				"2026-10-22T10:00:00Z",
+			),
+			"theirs": side(
+				"---\nphase: planning\ntitle: Changed\n---\nbody\n",
+				"2026-10-21T10:00:00Z",
+			),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		decoded := decode(recorder)
+		Expect(decoded["result"]).To(Equal("merged"))
+		content, ok := decoded["content"].(string)
+		Expect(ok).To(BeTrue(), "merged response must carry the bytes")
+		Expect(content).To(ContainSubstring("phase: execution"))
+		Expect(content).To(ContainSubstring("title: Changed"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("quarantines without content when apply is false", func() {
+		recorder := call(map[string]any{
+			"path":  "25 Tasks/Alpha.md",
+			"apply": false,
+			"base": side(
+				"---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z",
+			),
+			"ours": side(
+				"---\ntitle: Base\n---\nmine\n", "2026-10-22T10:00:00Z",
+			),
+			"theirs": side(
+				"---\ntitle: Base\n---\ntheirs\n", "2026-10-21T10:00:00Z",
+			),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		decoded := decode(recorder)
+		Expect(decoded["result"]).To(Equal("quarantined"))
+		Expect(decoded["reason"]).To(Equal(string(vaultapi.ReasonBodyConflict)))
+		Expect(decoded).NotTo(HaveKey("content"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
 	It("quarantines a body conflict without writing", func() {
 		recorder := call(map[string]any{
 			"path": "25 Tasks/Alpha.md",

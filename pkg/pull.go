@@ -52,12 +52,25 @@ func ResolveDivergedPull(
 	if err := writer.WriteFile(ctx, path, result.Content); err != nil {
 		return "", errors.Wrap(ctx, err, "write merged file")
 	}
-	// Only a file both sides changed is a merge worth recording. When either
-	// side still equals the base, nothing diverged: writing the winning side is
-	// right, but logging it would make the line indistinguishable from a real
-	// reconciliation, and a probe could no longer tell a merge from a no-op.
+	LogResolvedMerge(path, base, ours, theirs)
+	return "", nil
+}
+
+// LogResolvedMerge emits the merge marker for a divergence the service resolved.
+//
+// It is separate from the write because the two paths that resolve a divergence
+// differ only in who writes: an API caller has no working tree, so the service
+// writes for it, while git-rest is mid-pull holding the repository and takes the
+// bytes itself. Both reconciled a real divergence, so both must produce the same
+// marker — a probe that could only see one of them would report the puller's
+// automatic path as silent.
+//
+// Only a file both sides changed counts. When either side still equals the base,
+// nothing diverged: the winning side is written, but logging it would make the
+// line indistinguishable from a real reconciliation.
+func LogResolvedMerge(path string, base, ours, theirs Side) {
 	if bytes.Equal(ours.Content, base.Content) || bytes.Equal(theirs.Content, base.Content) {
-		return "", nil
+		return
 	}
 	// V0 rather than V(1): a resolved merge is a state change an operator has to
 	// see without turning on a verbosity flag. It is the only record that two
@@ -72,5 +85,4 @@ func ResolveDivergedPull(
 		ours.CommitterTime.Format(time.RFC3339),
 		theirs.CommitterTime.Format(time.RFC3339),
 	)
-	return "", nil
 }
