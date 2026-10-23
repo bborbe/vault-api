@@ -15,16 +15,32 @@ import (
 
 	libhttp "github.com/bborbe/http"
 	liblog "github.com/bborbe/log"
+	libtime "github.com/bborbe/time"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
+	"github.com/bborbe/vault-api/pkg/gitrest"
 )
 
 // NewHandler builds the service router. When gatewaySecret is non-empty every
 // /api/v1/* request must carry it in X-Gateway-Secret; the admin endpoints stay
 // unauthenticated, matching the fleet's contract.
-func NewHandler(ctx context.Context, index *vaultapi.Index, gatewaySecret string) http.Handler {
+//
+// The write endpoints need three things the read endpoints do not: vaultPath,
+// to read the original bytes before re-rendering them; writer, to hand the
+// rendered file to git-rest; and clock, so an approval's instant is injected
+// rather than read from the wall clock.
+func NewHandler(
+	ctx context.Context,
+	index *vaultapi.Index,
+	gatewaySecret string,
+	vaultPath string,
+	writer gitrest.Client,
+	clock libtime.CurrentDateTime,
+) http.Handler {
+	deps := writeDeps{index: index, vaultPath: vaultPath, writer: writer, clock: clock}
+
 	router := mux.NewRouter()
 	router.Path("/healthz").Handler(libhttp.NewPrintHandler("OK"))
 	router.Path("/readiness").HandlerFunc(handleReadiness(index))
@@ -39,6 +55,15 @@ func NewHandler(ctx context.Context, index *vaultapi.Index, gatewaySecret string
 	}
 	api.Path("/tasks").HandlerFunc(handleListTasks(index))
 	api.Path("/tasks/{id}").HandlerFunc(handleGetTask(index))
+	api.Path("/tasks/{id}/phase").
+		Methods(http.MethodPatch).
+		HandlerFunc(handlePatchPhase(deps))
+	api.Path("/tasks/{id}/status").
+		Methods(http.MethodPatch).
+		HandlerFunc(handlePatchStatus(deps))
+	api.Path("/tasks/{id}/approve").
+		Methods(http.MethodPost).
+		HandlerFunc(handleApprove(deps))
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
 

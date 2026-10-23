@@ -3,6 +3,7 @@ module github.com/bborbe/vault-api
 go 1.27.3
 
 require (
+	github.com/bborbe/errors v1.6.4
 	github.com/bborbe/http v1.26.31
 	github.com/bborbe/log v1.7.5
 	github.com/bborbe/run v1.11.3
@@ -21,7 +22,6 @@ require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/bborbe/argument/v2 v2.13.6 // indirect
 	github.com/bborbe/collection v1.21.4 // indirect
-	github.com/bborbe/errors v1.6.4 // indirect
 	github.com/bborbe/kv v1.21.19 // indirect
 	github.com/bborbe/math v1.4.16 // indirect
 	github.com/bborbe/parse v1.12.4 // indirect
