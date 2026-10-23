@@ -21,25 +21,37 @@ import (
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/gitrest"
+	"github.com/bborbe/vault-api/pkg/publisher"
 )
 
 // NewHandler builds the service router. When gatewaySecret is non-empty every
 // /api/v1/* request must carry it in X-Gateway-Secret; the admin endpoints stay
 // unauthenticated, matching the fleet's contract.
 //
-// The write endpoints need three things the read endpoints do not: vaultPath,
-// to read the original bytes before re-rendering them; writer, to hand the
-// rendered file to git-rest; and clock, so an approval's instant is injected
-// rather than read from the wall clock.
+// The write endpoints need four things the read endpoints do not: vaultPath, to
+// read the original bytes before re-rendering them; writer, to hand the rendered
+// file to git-rest; clock, so an approval's instant is injected rather than read
+// from the wall clock; and taskPublisher, which turns a landed write into a
+// change event. vaultName stamps that event so a consumer sharing one topic
+// across vaults can tell its own tasks apart.
 func NewHandler(
 	ctx context.Context,
 	index *vaultapi.Index,
 	gatewaySecret string,
 	vaultPath string,
+	vaultName string,
 	writer gitrest.Client,
 	clock libtime.CurrentDateTime,
+	taskPublisher publisher.TaskPublisher,
 ) http.Handler {
-	deps := writeDeps{index: index, vaultPath: vaultPath, writer: writer, clock: clock}
+	deps := writeDeps{
+		index:     index,
+		vaultPath: vaultPath,
+		vault:     vaultName,
+		writer:    writer,
+		clock:     clock,
+		publisher: taskPublisher,
+	}
 
 	router := mux.NewRouter()
 	router.Path("/healthz").Handler(libhttp.NewPrintHandler("OK"))

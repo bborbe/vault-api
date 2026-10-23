@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: Publish a task change event from every successful write, so `vault-api` becomes the producer the executor's compacted task view reads. The three write handlers publish through `pkg/publisher.TaskPublisher` after git-rest accepts the file — at the single `document.write` chokepoint, so no handler carries its own copy. A publish failure is logged and the request still answers 200: the file is already in git, and an error would make the client retry a transition that is now applied. `--kafka-brokers` / `KAFKA_BROKERS` enables the producer and `--topic-prefix` / `TOPIC_PREFIX` selects the per-cluster topic; both are optional, and unset means publishing is disabled while reads and writes are unaffected. The producer is built off the startup path behind a `publisher.Deferred` handle, so an unreachable broker cannot delay the read API or block a write — publishes report a not-ready error until construction succeeds, and the pull path republishes the same change from the commit diff.
+
 ## v0.6.1
 
 - fix: send the `X-Gateway-Initator` header on every git-rest write. git-rest's auth middleware answers **500** when that header is missing, and it checks it *before* the secret — so every write in v0.6.0 failed with `git_rest_failed` against a real git-rest. The misspelling is deliberate and part of git-rest's frozen public contract; the value is `vault-api`. Found by running the SC probes against the released binary and a local git-rest, not by the unit tests, which stop at a fake writer and never cross the real boundary.

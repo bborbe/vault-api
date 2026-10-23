@@ -11,14 +11,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
+	lib "github.com/bborbe/agent"
 	libtime "github.com/bborbe/time"
 	"github.com/bborbe/vault-cli/pkg/domain"
 	"github.com/bborbe/vault-cli/pkg/storage"
+	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/gitrest"
+	"github.com/bborbe/vault-api/pkg/publisher"
 	"github.com/bborbe/vault-api/pkg/rules"
 )
 
@@ -28,12 +32,15 @@ const maxWriteBodyBytes = 64 * 1024
 
 // writeDeps is everything the write endpoints share: the index resolves an id
 // to a path, the vault path supplies the original bytes, the writer sends the
-// rendered file to git-rest, and the clock stamps an approval.
+// rendered file to git-rest, the clock stamps an approval, and the publisher
+// turns a landed write into a change event on the task topic.
 type writeDeps struct {
 	index     *vaultapi.Index
 	vaultPath string
+	vault     string
 	writer    gitrest.Client
 	clock     libtime.CurrentDateTime
+	publisher publisher.TaskPublisher
 }
 
 // phaseRequest is the body of PATCH /api/v1/tasks/{id}/phase. ApprovedBy is a
@@ -271,12 +278,49 @@ func (d document) write(
 		})
 		return
 	}
+	// The file has landed in git, so the response is already decided: a publish
+	// failure must not turn a write that happened into an error the client retries,
+	// because that retry would be refused as an already-applied transition. Log it
+	// and answer 200 — the pull path republishes the same change from the commit
+	// diff, so the stream converges without the caller.
+	if err := deps.publisher.PublishChanged(ctx, d.task(deps.vault)); err != nil {
+		glog.Errorf("publish change event for task %s failed: %v", d.item.Path, err)
+	}
 	writeJSON(w, http.StatusOK, writeResponse{
 		ID:     d.item.ID,
 		Path:   d.item.Path,
 		Status: status,
 		Phase:  phase,
 	})
+}
+
+// task renders the document as a change-event payload. The identifier is the
+// index's id, which is the task's own task_identifier and falls back to a
+// filename slug only when the file carries none — the same value GET
+// /api/v1/tasks serves, so a consumer keys on one id across both paths.
+func (d document) task(vault string) lib.Task {
+	return lib.Task{
+		TaskIdentifier: lib.TaskIdentifier(d.item.ID),
+		Vault:          vault,
+		Frontmatter:    lib.TaskFrontmatter(d.frontmatter),
+		Content:        lib.TaskContent(taskBody(string(d.raw))),
+	}
+}
+
+// taskBody returns the markdown body after the frontmatter's closing delimiter.
+// A write re-renders only the frontmatter, so the body is taken from the bytes on
+// disk rather than from the rendered string.
+func taskBody(raw string) string {
+	const delimiter = "---"
+	rest, found := strings.CutPrefix(raw, delimiter)
+	if !found {
+		return ""
+	}
+	end := strings.Index(rest, "\n"+delimiter)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimPrefix(rest[end+len(delimiter)+1:], "\n")
 }
 
 // decodeBody reads a JSON body, answering 400 when it is not one.

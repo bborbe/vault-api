@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/bborbe/cqrs/base"
+	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	"github.com/bborbe/run"
 	libsentry "github.com/bborbe/sentry"
@@ -21,7 +23,13 @@ import (
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/gitrest"
 	"github.com/bborbe/vault-api/pkg/handler"
+	"github.com/bborbe/vault-api/pkg/publisher"
 )
+
+// publisherRetryInterval spaces attempts to build the change-event producer while
+// a broker is unreachable. It is a startup concern only: once a publisher is
+// installed the handle never needs rebuilding.
+const publisherRetryInterval = 30 * time.Second
 
 func main() {
 	app := &application{}
@@ -41,6 +49,13 @@ type application struct {
 	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                              display:"length"`
 	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                default:"http://vault-obsidian-personal:9090"`
 	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                 default:"30s"`
+	// KafkaBrokers enables the change-event producer. Empty disables it, which is
+	// what a local run wants: without a producer the service still serves reads and
+	// writes, it just publishes nothing.
+	KafkaBrokers string `required:"false" arg:"kafka-brokers"    env:"KAFKA_BROKERS"    usage:"Comma separated Kafka brokers for change events. Empty = publishing disabled."`
+	// TopicPrefix selects the per-cluster topic: the event topic is
+	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID.
+	TopicPrefix string `required:"false" arg:"topic-prefix"     env:"TOPIC_PREFIX"     usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
 }
 
 func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
@@ -62,13 +77,66 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	}
 
 	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
+	// A Deferred rather than a built publisher: NewSyncProducer blocks while a
+	// broker is unreachable, so constructing it here would make the read API's
+	// availability depend on Kafka. The handlers publish through this handle and
+	// report ErrNotReady until the background builder installs the real one.
+	taskPublisher := publisher.NewDeferred()
 
 	return run.CancelOnFirstFinish(ctx,
 		a.refresh(index, store),
+		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
-			ctx, index, a.GatewaySecret, a.VaultPath, writer, libtime.NewCurrentDateTime(),
+			ctx, index, a.GatewaySecret, a.VaultPath, a.VaultName, writer,
+			libtime.NewCurrentDateTime(), taskPublisher,
 		)),
 	)
+}
+
+// publishTaskEvents builds the change-event producer off the startup path and
+// installs it on the deferred handle. It never fails the process: a broker that is
+// unreachable at startup degrades to "no events yet" and retries, rather than
+// taking the read API down with it.
+func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
+	return func(ctx context.Context) error {
+		if a.KafkaBrokers == "" {
+			glog.Infof("no kafka brokers configured — task change events disabled")
+			<-ctx.Done()
+			return nil
+		}
+		// Brokers without a prefix would publish to "-agent-task-v1-event", which is
+		// a config mistake rather than a transient failure: fail loudly instead of
+		// publishing somewhere unintended.
+		if a.TopicPrefix == "" {
+			return errors.Errorf(ctx, "topic-prefix is required when kafka-brokers is set")
+		}
+		for {
+			taskPublisher, closer, err := publisher.NewKafkaTaskPublisher(
+				ctx,
+				a.KafkaBrokers,
+				base.TopicPrefix(a.TopicPrefix),
+				libtime.NewCurrentDateTime(),
+			)
+			if err == nil {
+				defer func() { _ = closer() }()
+				deferred.Set(taskPublisher)
+				glog.Infof("task change events enabled on prefix %s", a.TopicPrefix)
+				break
+			}
+			glog.Errorf(
+				"create task publisher failed, retrying in %s: %v",
+				publisherRetryInterval,
+				err,
+			)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(publisherRetryInterval):
+			}
+		}
+		<-ctx.Done()
+		return nil
+	}
 }
 
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
