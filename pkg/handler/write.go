@@ -298,11 +298,24 @@ func (d document) write(
 	err = deps.publisher.PublishChanged(publishCtx, d.task(deps.vault))
 	cancel()
 	if err != nil {
-		glog.Errorf(
-			"publish change event for task %s failed and the event is lost: %v",
-			d.item.Path,
-			err,
-		)
+		// ErrNotReady is the startup window, not a fault: the producer is still being
+		// built. It is still a lost event — nothing retries it — but logging it at
+		// Error would put an unbounded ERROR stream on every write for the whole of a
+		// broker outage, which is the noise the discard publisher exists to avoid for
+		// the disabled case.
+		if errors.Is(err, publisher.ErrNotReady) {
+			glog.Warningf(
+				"task publisher not ready, change event for %s is lost: %v",
+				d.item.Path,
+				err,
+			)
+		} else {
+			glog.Errorf(
+				"publish change event for task %s failed and the event is lost: %v",
+				d.item.Path,
+				err,
+			)
+		}
 	}
 	writeJSON(w, http.StatusOK, writeResponse{
 		ID:     d.item.ID,

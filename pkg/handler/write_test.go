@@ -349,6 +349,9 @@ var _ = Describe("Write endpoints", func() {
 			`{"status":"in_progress"}`,
 		)
 		Expect(published.changed).To(HaveLen(1))
+		// Assert the payload, not just the count: a wrong status in the event would
+		// otherwise pass while the chokepoint visibly fired.
+		Expect(published.changed[0].Frontmatter["status"]).To(Equal("in_progress"))
 
 		published.changed = nil
 		seed("status: todo\nphase: todo\n" +
@@ -358,6 +361,8 @@ var _ = Describe("Write endpoints", func() {
 			`{"approved_by":"operator"}`,
 		)
 		Expect(published.changed).To(HaveLen(1))
+		Expect(published.changed[0].Frontmatter["approved_by"]).To(Equal("operator"))
+		Expect(published.changed[0].Frontmatter["phase"]).To(Equal("planning"))
 	})
 
 	Describe("PATCH /api/v1/tasks/{id}/status", func() {
