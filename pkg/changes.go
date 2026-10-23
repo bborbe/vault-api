@@ -32,6 +32,8 @@ type Change struct {
 	Status ChangeStatus
 }
 
+//counterfeiter:generate -o ../mocks/differ.go --fake-name Differ . Differ
+
 // Differ reports the files that changed between two commits, and reads a file as
 // it existed at a commit. The second half is what makes deletions publishable:
 // the bytes of a deleted task are gone from the working tree, so the only place

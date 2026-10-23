@@ -55,6 +55,11 @@ func (e *emitter) Emit(ctx context.Context, oldHead string, newHead string) erro
 		return err
 	}
 	for _, change := range changes {
+		// Each iteration publishes, which can block on the broker; stop promptly
+		// when the process is shutting down rather than draining the whole diff.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !e.isTaskPath(change.Path) {
 			continue
 		}
