@@ -13,7 +13,7 @@ require (
 	github.com/bborbe/sentry v1.10.6
 	github.com/bborbe/service v1.11.1
 	github.com/bborbe/time v1.27.18
-	github.com/bborbe/vault-cli v0.178.3
+	github.com/bborbe/vault-cli v0.180.0
 	github.com/golang/glog v1.2.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1

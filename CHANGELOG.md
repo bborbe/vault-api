@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: Add `PATCH /api/v1/tasks/{id}/phase`, `PATCH /api/v1/tasks/{id}/status` and `POST /api/v1/tasks/{id}/approve`, enforcing the phase and status graphs server-side and writing the rendered file through git-rest. A refusal names its class — `invalid_transition`, `approval_required`, `approval_is_a_verb`, `not_approvable`, `already_approved`, `blank_approver`, `unknown_phase`, `unknown_status` — and carries `from`, `to`, `allowed` and `path` where they apply.
+- feat: Add the `--git-rest-url` / `GIT_REST_URL` flag naming the vault's git-rest service the write endpoints post to.
+
 ## v0.5.0
 
 - feat: Label `vault_api_open_tasks` by each task's own frontmatter `stage`, not by the instance constant, so the gauge reports the environment a task targets instead of the cluster serving it; a task with no `stage` counts under `unknown`. **Breaking for queries:** the instance's own stage moved from the `stage` label to `instance_stage`, so `stage="prod"` now selects tasks targeting prod — a per-cluster selector needs `instance_stage` as well. The `--stage` / `STAGE` flag is now `--instance-stage` / `INSTANCE_STAGE`.
