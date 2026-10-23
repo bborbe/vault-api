@@ -11,14 +11,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
+	lib "github.com/bborbe/agent"
 	libtime "github.com/bborbe/time"
 	"github.com/bborbe/vault-cli/pkg/domain"
 	"github.com/bborbe/vault-cli/pkg/storage"
+	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/gitrest"
+	"github.com/bborbe/vault-api/pkg/publisher"
 	"github.com/bborbe/vault-api/pkg/rules"
 )
 
@@ -26,14 +31,22 @@ import (
 // status name and an approver, so anything approaching this is a mistake.
 const maxWriteBodyBytes = 64 * 1024
 
+// publishTimeout bounds the change-event publish on the request path. The file is
+// already in git by then, so waiting on a broker can only delay a response whose
+// outcome is decided.
+const publishTimeout = 5 * time.Second
+
 // writeDeps is everything the write endpoints share: the index resolves an id
 // to a path, the vault path supplies the original bytes, the writer sends the
-// rendered file to git-rest, and the clock stamps an approval.
+// rendered file to git-rest, the clock stamps an approval, and the publisher
+// turns a landed write into a change event on the task topic.
 type writeDeps struct {
 	index     *vaultapi.Index
 	vaultPath string
+	vault     string
 	writer    gitrest.Client
 	clock     libtime.CurrentDateTime
+	publisher publisher.TaskPublisher
 }
 
 // phaseRequest is the body of PATCH /api/v1/tasks/{id}/phase. ApprovedBy is a
@@ -271,12 +284,74 @@ func (d document) write(
 		})
 		return
 	}
+	// The file has landed in git, so the response is already decided: a publish
+	// failure must not turn a write that happened into an error the client retries,
+	// because that retry would be refused as an already-applied transition.
+	//
+	// The event is therefore best-effort here, but a failure is not silent: the pull
+	// path diffs the commit this write produced and publishes the same change, so a
+	// broker outage or a timeout delays the event rather than dropping it. Publishing
+	// under WithoutCancel keeps a client hanging up from being one of those causes —
+	// only the timeout can end it.
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
+	err = deps.publisher.PublishChanged(publishCtx, d.task(deps.vault))
+	cancel()
+	if err != nil {
+		// ErrNotReady is the startup window, not a fault: the producer is still being
+		// built. It is still a lost event — nothing retries it — but logging it at
+		// Error would put an unbounded ERROR stream on every write for the whole of a
+		// broker outage, which is the noise the discard publisher exists to avoid for
+		// the disabled case.
+		if errors.Is(err, publisher.ErrNotReady) {
+			glog.Warningf(
+				"task publisher not ready, change event for %s is lost: %v",
+				d.item.Path,
+				err,
+			)
+		} else {
+			glog.Errorf(
+				"publish change event for task %s failed and the event is lost: %v",
+				d.item.Path,
+				err,
+			)
+		}
+	}
 	writeJSON(w, http.StatusOK, writeResponse{
 		ID:     d.item.ID,
 		Path:   d.item.Path,
 		Status: status,
 		Phase:  phase,
 	})
+}
+
+// task renders the document as a change-event payload. The identifier is the
+// index's id, which is the task's own task_identifier and falls back to a
+// filename slug only when the file carries none — the same value GET
+// /api/v1/tasks serves, so a consumer keys on one id across both paths.
+func (d document) task(vault string) lib.Task {
+	return lib.Task{
+		TaskIdentifier: lib.TaskIdentifier(d.item.ID),
+		Vault:          vault,
+		Frontmatter:    lib.TaskFrontmatter(d.frontmatter),
+		Content:        lib.TaskContent(taskBody(string(d.raw))),
+	}
+}
+
+// taskBody returns the markdown body after the frontmatter's closing delimiter.
+// A write re-renders only the frontmatter, so the body is taken from the bytes on
+// disk rather than from the rendered string.
+func taskBody(raw string) string {
+	rest, found := strings.CutPrefix(raw, "---")
+	if !found {
+		return ""
+	}
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return ""
+	}
+	// Both line endings, because a vault checked out on a machine with autocrlf can
+	// carry CRLF and the event body must not start with a stray \r.
+	return strings.TrimPrefix(strings.TrimPrefix(rest[end+len("---")+1:], "\r"), "\n")
 }
 
 // decodeBody reads a JSON body, answering 400 when it is not one.
