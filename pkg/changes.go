@@ -78,13 +78,18 @@ func (d *gitDiffer) git(ctx context.Context, args ...string) (string, error) {
 	// The vault path is passed explicitly rather than inherited from the process
 	// working directory: the pod's cwd is not the vault, and a bare `git` would
 	// walk up from it and fail or, worse, read another repository.
-	baseArgs := make([]string, 0, 4+len(args))
+	baseArgs := make([]string, 0, 6+len(args))
 	baseArgs = append(
 		baseArgs,
 		"--git-dir",
 		filepath.Join(d.vaultPath, ".git"),
 		"--work-tree",
 		d.vaultPath,
+		// Without this, git C-quotes any non-ASCII path (25 Tasks/K\303\244se.md),
+		// which never matches the tasks-dir prefix, so the file would be skipped
+		// silently instead of emitting.
+		"-c",
+		"core.quotepath=false",
 	)
 	// #nosec G204 -- the binary is the literal "git" and every argument is built
 	// here from the configured vault path or from a commit SHA the caller read out

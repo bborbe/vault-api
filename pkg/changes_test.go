@@ -101,4 +101,19 @@ var _ = Describe("GitDiffer", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(changes).To(BeEmpty())
 	})
+
+	It("reports a non-ASCII path unquoted so it can match the tasks dir", func() {
+		// git C-quotes such a path by default, and a quoted path never matches the
+		// tasks-dir prefix — the file would be skipped silently.
+		write("25 Tasks/Käse Task.md", "---\nstatus: hold\n---\n# One\n")
+		oldHead := commit("add unicode task")
+		write("25 Tasks/Käse Task.md", "---\nstatus: hold\n---\n# Two\n")
+		newHead := commit("edit unicode task")
+
+		changes, err := differ.Diff(ctx, oldHead, newHead)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changes).To(Equal([]vaultapi.Change{
+			{Path: "25 Tasks/Käse Task.md", Status: vaultapi.ChangeModified},
+		}))
+	})
 })

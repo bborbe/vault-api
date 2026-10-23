@@ -67,52 +67,95 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		glog.Warningf("initial index build failed: %v", err)
 	}
 
-	emitter, closePublisher, err := a.emitter(ctx)
+	factory, err := a.emitterFactory(ctx)
 	if err != nil {
 		return err
 	}
-	if closePublisher != nil {
-		defer func() {
-			if closeErr := closePublisher(); closeErr != nil {
-				glog.Warningf("close change-event publisher failed: %v", closeErr)
-			}
-		}()
-	}
 
 	return run.CancelOnFirstFinish(ctx,
-		a.refresh(index, store, emitter),
+		a.refresh(index, store, factory),
 		libhttp.NewServer(a.Listen, handler.NewHandler(ctx, index, a.GatewaySecret)),
 	)
 }
 
-// emitter builds the change-event producer, or returns a nil emitter when no
-// broker is configured. A nil emitter leaves the service a pure reader, which is
-// the pre-change behaviour and what a local run wants.
-func (a *application) emitter(ctx context.Context) (vaultapi.Emitter, func() error, error) {
+// emitterFactory validates the change-event config and returns a constructor, or
+// nil when no broker is configured.
+//
+// The constructor is deliberately not called here: NewSyncProducer blocks on an
+// unreachable broker, so building the producer before the HTTP server starts would
+// make the read API's availability depend on Kafka. The refresh loop builds it
+// lazily instead, and a broker outage degrades to "no events yet" rather than
+// "no reads".
+func (a *application) emitterFactory(
+	ctx context.Context,
+) (func(ctx context.Context) (vaultapi.Emitter, func() error, error), error) {
 	if a.KafkaBrokers == "" {
 		glog.Infof("no kafka brokers configured — change events disabled")
-		return nil, nil, nil
+		return nil, nil
 	}
-	taskPublisher, closePublisher, err := publisher.NewKafkaTaskPublisher(
-		ctx,
-		a.KafkaBrokers,
-		base.TopicPrefix(a.TopicPrefix),
-		libtime.NewCurrentDateTime(),
-	)
+	// With brokers set but no prefix the topic would be "-agent-task-v1-event",
+	// which is a config mistake rather than a transient failure, so it fails fast
+	// and loudly instead of publishing somewhere unintended.
+	if a.TopicPrefix == "" {
+		return nil, errors.Errorf(ctx, "topic-prefix is required when kafka-brokers is set")
+	}
+	return func(ctx context.Context) (vaultapi.Emitter, func() error, error) {
+		taskPublisher, closePublisher, err := publisher.NewKafkaTaskPublisher(
+			ctx,
+			a.KafkaBrokers,
+			base.TopicPrefix(a.TopicPrefix),
+			libtime.NewCurrentDateTime(),
+		)
+		if err != nil {
+			return nil, nil, errors.Wrapf(ctx, err, "create change-event publisher failed")
+		}
+		glog.Infof("change events enabled on topic prefix %q", a.TopicPrefix)
+		return vaultapi.NewEmitter(
+			vaultapi.Config{
+				VaultPath: a.VaultPath,
+				VaultName: a.VaultName,
+				TasksDir:  a.TasksDir,
+				GoalsDir:  a.GoalsDir,
+			},
+			vaultapi.NewGitDiffer(a.VaultPath),
+			taskPublisher,
+		), closePublisher, nil
+	}, nil
+}
+
+// changePublisher holds the lazily built producer. A failed construction is
+// retried on the next tick that has something to publish, so a broker that comes
+// up late still gets the backlog.
+type changePublisher struct {
+	factory func(ctx context.Context) (vaultapi.Emitter, func() error, error)
+	emitter vaultapi.Emitter
+	close   func() error
+}
+
+func (p *changePublisher) get(ctx context.Context) vaultapi.Emitter {
+	if p == nil || p.factory == nil {
+		return nil
+	}
+	if p.emitter != nil {
+		return p.emitter
+	}
+	emitter, closePublisher, err := p.factory(ctx)
 	if err != nil {
-		return nil, nil, errors.Wrapf(ctx, err, "create change-event publisher failed")
+		glog.Warningf("change events unavailable, retrying on the next change: %v", err)
+		return nil
 	}
-	glog.Infof("change events enabled on topic prefix %q", a.TopicPrefix)
-	return vaultapi.NewEmitter(
-		vaultapi.Config{
-			VaultPath: a.VaultPath,
-			VaultName: a.VaultName,
-			TasksDir:  a.TasksDir,
-			GoalsDir:  a.GoalsDir,
-		},
-		vaultapi.NewGitDiffer(a.VaultPath),
-		taskPublisher,
-	), closePublisher, nil
+	p.emitter = emitter
+	p.close = closePublisher
+	return p.emitter
+}
+
+func (p *changePublisher) closeIfOpen() {
+	if p == nil || p.close == nil {
+		return
+	}
+	if err := p.close(); err != nil {
+		glog.Warningf("close change-event publisher failed: %v", err)
+	}
 }
 
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
@@ -127,9 +170,11 @@ func (a *application) emitter(ctx context.Context) (vaultapi.Emitter, func() err
 func (a *application) refresh(
 	index *vaultapi.Index,
 	store storage.PageStorage,
-	emitter vaultapi.Emitter,
+	factory func(ctx context.Context) (vaultapi.Emitter, func() error, error),
 ) run.Func {
 	return func(ctx context.Context) error {
+		publisher := &changePublisher{factory: factory}
+		defer publisher.closeIfOpen()
 		emittedHead := vaultapi.ResolveHead(a.VaultPath)
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
@@ -139,7 +184,7 @@ func (a *application) refresh(
 				return nil
 			case <-ticker.C:
 				current := vaultapi.ResolveHead(a.VaultPath)
-				emittedHead = publishChanges(ctx, emitter, emittedHead, current)
+				emittedHead = publishChanges(ctx, publisher, emittedHead, current)
 				ready := index.Readiness().Ready
 				if ready && index.Head() == current {
 					continue
@@ -157,11 +202,25 @@ func (a *application) refresh(
 // did not, so the same diff is retried on the next tick rather than dropped.
 func publishChanges(
 	ctx context.Context,
-	emitter vaultapi.Emitter,
+	publisher *changePublisher,
 	emittedHead string,
 	current string,
 ) string {
-	if emitter == nil || current == "" || emittedHead == "" || current == emittedHead {
+	if current == "" {
+		return emittedHead
+	}
+	// Adopt the first head seen rather than diffing from nothing: with no earlier
+	// commit there is nothing to publish, and starting from "" would replay the
+	// vault's entire history. This also recovers a process that started before the
+	// vault had a readable HEAD.
+	if emittedHead == "" {
+		return current
+	}
+	if current == emittedHead {
+		return emittedHead
+	}
+	emitter := publisher.get(ctx)
+	if emitter == nil {
 		return emittedHead
 	}
 	if err := emitter.Emit(ctx, emittedHead, current); err != nil {

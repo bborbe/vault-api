@@ -6,7 +6,6 @@ package vaultapi
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -63,21 +62,31 @@ func (e *emitter) Emit(ctx context.Context, oldHead string, newHead string) erro
 		if !e.isTaskPath(change.Path) {
 			continue
 		}
-		if err := e.emitOne(ctx, change, oldHead); err != nil {
+		if err := e.emitOne(ctx, change, oldHead, newHead); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (e *emitter) emitOne(ctx context.Context, change Change, oldHead string) error {
-	content, err := e.content(ctx, change, oldHead)
+func (e *emitter) emitOne(
+	ctx context.Context,
+	change Change,
+	oldHead string,
+	newHead string,
+) error {
+	content, err := e.content(ctx, change, oldHead, newHead)
 	if err != nil {
-		glog.Warningf("skip %s %s: %v", change.Status, change.Path, err)
-		return nil
+		// A read failure is transient — the object store is local, but a concurrent
+		// gc or an interrupted fetch can lose it for a moment. Return it so the
+		// caller keeps its baseline and retries the same diff, rather than advancing
+		// past an event that was never published.
+		return errors.Wrapf(ctx, err, "read %s for %s failed", change.Path, change.Status)
 	}
 	task, err := e.taskFromContent(ctx, change.Path, content)
 	if err != nil {
+		// Unparseable content is permanent: the same bytes will not parse on the
+		// next tick, so skip it and let the batch finish.
 		glog.Warningf("skip %s %s: %v", change.Status, change.Path, err)
 		return nil
 	}
@@ -87,13 +96,19 @@ func (e *emitter) emitOne(ctx context.Context, change Change, oldHead string) er
 	return e.publisher.PublishChanged(ctx, task)
 }
 
-// content reads the new bytes from the working tree, except for a deletion,
-// whose bytes only exist at the old commit.
-func (e *emitter) content(ctx context.Context, change Change, oldHead string) ([]byte, error) {
+// content reads the bytes the event describes. Both sides are read from the
+// commit the diff names, never from the working tree: the tree can advance again
+// between the diff and this read, and an event must describe the range it claims.
+func (e *emitter) content(
+	ctx context.Context,
+	change Change,
+	oldHead string,
+	newHead string,
+) ([]byte, error) {
 	if change.Status == ChangeDeleted {
 		return e.differ.ReadAt(ctx, oldHead, change.Path)
 	}
-	return os.ReadFile(filepath.Join(e.cfg.VaultPath, filepath.FromSlash(change.Path)))
+	return e.differ.ReadAt(ctx, newHead, change.Path)
 }
 
 func (e *emitter) isTaskPath(path string) bool {

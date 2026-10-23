@@ -7,8 +7,6 @@ package vaultapi_test
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 
 	lib "github.com/bborbe/agent"
 	. "github.com/onsi/ginkgo/v2"
@@ -65,43 +63,31 @@ func (f *fakePublisher) PublishDeleted(_ context.Context, id lib.TaskIdentifier)
 var _ = Describe("Emitter", func() {
 	var (
 		ctx       context.Context
-		vaultPath string
 		differ    *fakeDiffer
 		publisher *fakePublisher
 		emitter   vaultapi.Emitter
 	)
 
+	taskFile := "---\ntask_identifier: " + probeIdentifier + "\nstatus: hold\n---\n# Body\n"
+
 	BeforeEach(func() {
 		ctx = context.Background()
-		var err error
-		vaultPath, err = os.MkdirTemp("", "vault-api-emitter")
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(func() { _ = os.RemoveAll(vaultPath) })
-
 		differ = &fakeDiffer{}
 		publisher = &fakePublisher{}
 		emitter = vaultapi.NewEmitter(vaultapi.Config{
-			VaultPath: vaultPath,
+			VaultPath: "/vault",
 			VaultName: "private-personal",
 			TasksDir:  "25 Tasks",
 			GoalsDir:  "24 Goals",
 		}, differ, publisher)
 	})
 
-	writeTask := func(relPath string, content string) {
-		full := filepath.Join(vaultPath, filepath.FromSlash(relPath))
-		Expect(os.MkdirAll(filepath.Dir(full), 0o755)).To(Succeed())
-		Expect(os.WriteFile(full, []byte(content), 0o644)).To(Succeed())
-	}
-
-	taskFile := "---\ntask_identifier: " + probeIdentifier + "\nstatus: hold\n---\n# Body\n"
-
 	Describe("Emit", func() {
 		It("publishes exactly one changed event for one changed task file", func() {
-			writeTask("25 Tasks/Probe Task.md", taskFile)
 			differ.changes = []vaultapi.Change{
 				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
 			}
+			differ.readAtContent = []byte(taskFile)
 
 			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
 
@@ -114,6 +100,18 @@ var _ = Describe("Emitter", func() {
 			Expect(publisher.deleted).To(BeEmpty())
 		})
 
+		It("reads the new bytes at the diffed commit, not the working tree", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeAdded},
+			}
+			differ.readAtContent = []byte(taskFile)
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
+
+			Expect(differ.readAtHead).To(Equal("bbbbbbb2"))
+			Expect(differ.readAtPath).To(Equal("25 Tasks/Probe Task.md"))
+		})
+
 		It("publishes nothing when the two heads are identical", func() {
 			Expect(emitter.Emit(ctx, "aaaaaaa1", "aaaaaaa1")).To(Succeed())
 
@@ -123,7 +121,6 @@ var _ = Describe("Emitter", func() {
 		})
 
 		It("publishes no task event when only a goals file changed", func() {
-			writeTask("24 Goals/Some Goal.md", "---\nstatus: in_progress\n---\n")
 			differ.changes = []vaultapi.Change{
 				{Path: "24 Goals/Some Goal.md", Status: vaultapi.ChangeModified},
 			}
@@ -149,30 +146,53 @@ var _ = Describe("Emitter", func() {
 		})
 
 		It("skips a file whose frontmatter does not parse without failing the batch", func() {
-			writeTask("25 Tasks/Broken.md", "no frontmatter here")
 			differ.changes = []vaultapi.Change{
 				{Path: "25 Tasks/Broken.md", Status: vaultapi.ChangeModified},
 			}
+			differ.readAtContent = []byte("no frontmatter here")
 
 			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
 			Expect(publisher.changed).To(BeEmpty())
 		})
 
-		It("returns the publish error so the caller keeps its baseline unadvanced", func() {
-			writeTask("25 Tasks/Probe Task.md", taskFile)
+		It("returns a read error so the caller retries instead of dropping the event", func() {
 			differ.changes = []vaultapi.Change{
 				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
 			}
+			differ.readAtErr = errors.New("object missing")
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
+			Expect(publisher.changed).To(BeEmpty())
+		})
+
+		It("returns the publish error so the caller keeps its baseline unadvanced", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtContent = []byte(taskFile)
 			publisher.changedErr = errors.New("kafka unavailable")
 
 			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
 		})
 
+		It("stops the batch when the context is cancelled", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtContent = []byte(taskFile)
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+
+			Expect(emitter.Emit(cancelled, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
+			Expect(publisher.changed).To(BeEmpty())
+		})
+
 		It("falls back to the path slug when the file carries no task_identifier", func() {
-			writeTask("25 Tasks/Probe Task.md", "---\nstatus: hold\n---\n# Body\n")
 			differ.changes = []vaultapi.Change{
 				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeAdded},
 			}
+			differ.readAtContent = []byte("---\nstatus: hold\n---\n# Body\n")
 
 			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
 
