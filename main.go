@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/golang/glog"
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
+	"github.com/bborbe/vault-api/pkg/gitrest"
 	"github.com/bborbe/vault-api/pkg/handler"
 	"github.com/bborbe/vault-api/pkg/publisher"
 )
@@ -39,7 +41,8 @@ type application struct {
 	InstanceStage   string           `required:"false" arg:"instance-stage"   env:"INSTANCE_STAGE"   usage:"stage of this vault-api instance, reported as the instance_stage metric label (dev, prod). Distinct from the per-task stage label." default:""`
 	TasksDir        string           `required:"false" arg:"tasks-dir"        env:"TASKS_DIR"        usage:"task directory inside the vault"                                                                                                    default:"25 Tasks"`
 	GoalsDir        string           `required:"false" arg:"goals-dir"        env:"GOALS_DIR"        usage:"goal directory inside the vault"                                                                                                    default:"24 Goals"`
-	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                   display:"length"`
+	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                              display:"length"`
+	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                default:"http://vault-obsidian-personal:9090"`
 	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                 default:"30s"`
 	// KafkaBrokers enables the change-event producer. Empty disables it, which is
 	// what a local run wants: without a producer the service still serves reads.
@@ -76,9 +79,13 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	feed := vaultapi.NewFeed(factory, publisher.IsPermanent)
 	defer feed.Close()
 
+	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
+
 	return run.CancelOnFirstFinish(ctx,
 		a.refresh(index, store, feed),
-		libhttp.NewServer(a.Listen, handler.NewHandler(ctx, index, a.GatewaySecret)),
+		libhttp.NewServer(a.Listen, handler.NewHandler(
+			ctx, index, a.GatewaySecret, a.VaultPath, writer, libtime.NewCurrentDateTime(),
+		)),
 	)
 }
 

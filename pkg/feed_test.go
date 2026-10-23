@@ -42,7 +42,8 @@ var _ = Describe("Feed", func() {
 		ctx = context.Background()
 	})
 
-	DescribeTable("Advance returns the baseline to carry forward",
+	DescribeTable(
+		"Advance returns the baseline to carry forward",
 		func(baseline, head string, emitErr, factoryErr error, want string, wantCalls int) {
 			emitter := &fakeEmitter{err: emitErr}
 			feed := newFeed(emitter, factoryErr)
@@ -60,9 +61,33 @@ var _ = Describe("Feed", func() {
 		Entry("advances once the batch published", "aaaaaaa1", "bbbbbbb2", nil, nil, "bbbbbbb2", 1),
 		Entry("keeps the baseline when publishing fails, so the diff retries",
 			"aaaaaaa1", "bbbbbbb2", errors.New("kafka unavailable"), nil, "aaaaaaa1", 1),
-		Entry("adopts the first head seen instead of replaying history", "", "bbbbbbb2", nil, nil, "bbbbbbb2", 0),
-		Entry("keeps an empty baseline while the tree has no readable head", "", "", nil, nil, "", 0),
-		Entry("publishes nothing when the head did not move", "aaaaaaa1", "aaaaaaa1", nil, nil, "aaaaaaa1", 0),
+		Entry(
+			"adopts the first head seen instead of replaying history",
+			"",
+			"bbbbbbb2",
+			nil,
+			nil,
+			"bbbbbbb2",
+			0,
+		),
+		Entry(
+			"keeps an empty baseline while the tree has no readable head",
+			"",
+			"",
+			nil,
+			nil,
+			"",
+			0,
+		),
+		Entry(
+			"publishes nothing when the head did not move",
+			"aaaaaaa1",
+			"aaaaaaa1",
+			nil,
+			nil,
+			"aaaaaaa1",
+			0,
+		),
 		Entry("keeps the baseline when the producer cannot be built",
 			"aaaaaaa1", "bbbbbbb2", nil, errors.New("broker unreachable"), "aaaaaaa1", 0),
 	)
