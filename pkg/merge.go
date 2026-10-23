@@ -20,23 +20,27 @@ type Side struct {
 	CommitterTime time.Time
 }
 
+// MergeReason names why a file could not be resolved. The empty value means the
+// merge succeeded.
+type MergeReason string
+
+const (
+	// ReasonUnparsable names a side whose frontmatter does not parse.
+	ReasonUnparsable MergeReason = "frontmatter does not parse"
+	// ReasonBodyConflict names a body both sides changed differently.
+	ReasonBodyConflict MergeReason = "body conflict outside the frontmatter"
+	// ReasonLifecycle names status/phase edits that are not a legal transition.
+	ReasonLifecycle MergeReason = "lifecycle fields are not a legal transition"
+)
+
 // MergeResult is the outcome of resolving a diverged file. Content is the file
 // to write when Quarantine is false. When Quarantine is true, Content is empty
 // and Reason names why no rule could resolve the file.
 type MergeResult struct {
 	Content    []byte
 	Quarantine bool
-	Reason     string
+	Reason     MergeReason
 }
-
-const (
-	// ReasonUnparsable names a side whose frontmatter does not parse.
-	ReasonUnparsable = "frontmatter does not parse"
-	// ReasonBodyConflict names a body both sides changed differently.
-	ReasonBodyConflict = "body conflict outside the frontmatter"
-	// ReasonLifecycle names status/phase edits that are not a legal transition.
-	ReasonLifecycle = "lifecycle fields are not a legal transition"
-)
 
 // MergeFile resolves a three-way merge of one vault file.
 //
@@ -48,6 +52,12 @@ const (
 //
 // This function performs no I/O. The pull path supplies the three sides and
 // writes the merged bytes through whatever write path it owns.
+//
+// Named for the operation rather than as NewMergeResult: it is not a
+// constructor. It takes no context and returns no error for the same reason it
+// does no I/O — an unparsable side, an illegal lifecycle pair and a body
+// conflict are outcomes of the merge, reported as Quarantine with a Reason, not
+// failures of it.
 func MergeFile(base, ours, theirs Side) MergeResult {
 	baseFile, ok := parseFile(base.Content)
 	if !ok {
