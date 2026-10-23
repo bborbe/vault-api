@@ -19,12 +19,13 @@ import (
 
 var _ = Describe("Client", func() {
 	var (
-		ctx         context.Context
-		server      *httptest.Server
-		requestedAt string
-		secretSeen  string
-		bodySeen    string
-		status      int
+		ctx           context.Context
+		server        *httptest.Server
+		requestedAt   string
+		secretSeen    string
+		initiatorSeen string
+		bodySeen      string
+		status        int
 	)
 
 	BeforeEach(func() {
@@ -34,6 +35,7 @@ var _ = Describe("Client", func() {
 			func(w http.ResponseWriter, r *http.Request) {
 				requestedAt = r.URL.EscapedPath()
 				secretSeen = r.Header.Get(gitrest.HeaderGatewaySecret)
+				initiatorSeen = r.Header.Get(gitrest.HeaderGatewayInitator)
 				body, _ := io.ReadAll(r.Body)
 				bodySeen = string(body)
 				w.WriteHeader(status)
@@ -54,6 +56,9 @@ var _ = Describe("Client", func() {
 
 		Expect(requestedAt).To(Equal("/api/v1/files/25%20Tasks/Alpha%20Task.md"))
 		Expect(secretSeen).To(Equal("shared-secret"))
+		// git-rest answers 500 before it checks the secret when this is absent,
+		// so the header is part of the contract, not an optional extra.
+		Expect(initiatorSeen).To(Equal(gitrest.Initiator))
 		Expect(bodySeen).To(Equal("---\nphase: planning\n---\n"))
 	})
 
