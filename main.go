@@ -71,9 +71,13 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	if err != nil {
 		return err
 	}
+	// Always a Feed, even with a nil factory: the no-broker case then still owns a
+	// baseline and simply publishes nothing, so the loop needs no nil checks.
+	feed := vaultapi.NewFeed(factory, publisher.IsPermanent)
+	defer feed.Close()
 
 	return run.CancelOnFirstFinish(ctx,
-		a.refresh(index, store, factory),
+		a.refresh(index, store, feed),
 		libhttp.NewServer(a.Listen, handler.NewHandler(ctx, index, a.GatewaySecret)),
 	)
 }
@@ -123,93 +127,19 @@ func (a *application) emitterFactory(
 	}, nil
 }
 
-// changePublisher holds the lazily built producer. A failed construction is
-// retried on the next tick that has something to publish, so a broker that comes
-// up late still gets the backlog.
-type changePublisher struct {
-	factory func(ctx context.Context) (vaultapi.Emitter, func() error, error)
-	emitter vaultapi.Emitter
-	close   func() error
-
-	// A single event that always fails — a payload over the broker's
-	// message.max.bytes is the concrete case — would otherwise hold the baseline
-	// forever and silently stop every later change from publishing. Only errors the
-	// broker will never accept count toward the cap; a connectivity failure is
-	// retried indefinitely, because dropping changes during an outage is exactly
-	// what this feature exists to prevent.
-	attempts    int
-	rangeKey    string
-	isPermanent func(err error) bool
-}
-
-const maxPublishRetries = 3
-
-func (p *changePublisher) get(ctx context.Context) vaultapi.Emitter {
-	if p == nil || p.factory == nil {
-		return nil
-	}
-	if p.emitter != nil {
-		return p.emitter
-	}
-	emitter, closePublisher, err := p.factory(ctx)
-	if err != nil {
-		glog.Warningf("change events unavailable, retrying on the next change: %v", err)
-		return nil
-	}
-	p.emitter = emitter
-	p.close = closePublisher
-	return p.emitter
-}
-
-// fail records a failed attempt on rangeKey and reports whether the range should
-// be abandoned rather than retried again. A transient failure resets the counter:
-// an outage of any length must not consume the budget meant for a poison message.
-func (p *changePublisher) fail(rangeKey string, err error) bool {
-	if p.isPermanent != nil && !p.isPermanent(err) {
-		p.rangeKey = rangeKey
-		p.attempts = 0
-		return false
-	}
-	if p.rangeKey != rangeKey {
-		p.rangeKey = rangeKey
-		p.attempts = 0
-	}
-	p.attempts++
-	return p.attempts >= maxPublishRetries
-}
-
-func (p *changePublisher) succeeded() {
-	p.attempts = 0
-	p.rangeKey = ""
-}
-
-func (p *changePublisher) closeIfOpen() {
-	if p == nil || p.close == nil {
-		return
-	}
-	if err := p.close(); err != nil {
-		glog.Warningf("close change-event publisher failed: %v", err)
-	}
-}
-
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
 // first successful build has not happened yet. A steady HEAD means no file is
 // read, so the file-read counter stays flat between pulls.
 //
-// Before rebuilding it publishes one change event per task file that differs
-// between the previous HEAD and the current one. That is what makes externally
-// pushed changes visible without the controller's git scan. The baseline advances
-// only after a successful publish, so a Kafka failure retries the same diff on the
-// next tick instead of losing it.
+// After rebuilding it hands the new HEAD to the feed, which publishes one change
+// event per task file that differs from the last published commit. That is what
+// makes externally pushed changes visible without the controller's git scan.
 func (a *application) refresh(
 	index *vaultapi.Index,
 	store storage.PageStorage,
-	factory func(ctx context.Context) (vaultapi.Emitter, func() error, error),
+	feed vaultapi.Feed,
 ) run.Func {
 	return func(ctx context.Context) error {
-		changes := &changePublisher{factory: factory, isPermanent: publisher.IsPermanent}
-		defer changes.closeIfOpen()
-		emittedHead := vaultapi.ResolveHead(a.VaultPath)
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
 		for {
@@ -228,68 +158,8 @@ func (a *application) refresh(
 				// blocks on an unreachable broker (sarama dials and retries), so
 				// publishing first would stall the index the read path serves for the
 				// whole dial timeout — the coupling this change exists to remove.
-				emittedHead = publishChanges(ctx, changes, emittedHead, current)
+				feed.Advance(ctx, current)
 			}
 		}
 	}
-}
-
-// publishChanges emits the events for emittedHead..current and returns the
-// baseline to carry forward: current once the batch published, unchanged when it
-// did not, so the same diff is retried on the next tick rather than dropped.
-func publishChanges(
-	ctx context.Context,
-	changes *changePublisher,
-	emittedHead string,
-	current string,
-) string {
-	if current == "" {
-		return emittedHead
-	}
-	// Adopt the first head seen rather than diffing from nothing: with no earlier
-	// commit there is nothing to publish, and starting from "" would replay the
-	// vault's entire history.
-	//
-	// Known limitation, accepted: the baseline is process-local, so changes pushed
-	// while vault-api was down are adopted silently and never published. Recovering
-	// them needs either a persisted baseline or a full re-publish at startup; until
-	// one exists, a restarted instance's consumers converge on a task's next change
-	// rather than on the restart itself.
-	if emittedHead == "" {
-		return current
-	}
-	if current == emittedHead {
-		return emittedHead
-	}
-	emitter := changes.get(ctx)
-	if emitter == nil {
-		return emittedHead
-	}
-	if err := emitter.Emit(ctx, emittedHead, current); err != nil {
-		// Key the budget on the baseline, not on the range: `current` moves with
-		// every commit, so a range key would reset the counter on an actively
-		// edited vault and the cap would never fire.
-		rangeKey := emittedHead
-		if changes.fail(rangeKey, err) {
-			glog.Errorf(
-				"abandoning changes from %s after %d failed attempts; resuming at %s: %v",
-				rangeKey,
-				maxPublishRetries,
-				current,
-				err,
-			)
-			return current
-		}
-		glog.Warningf(
-			"publish changes %s..%s failed (attempt %d/%d): %v",
-			rangeKey,
-			current,
-			changes.attempts,
-			maxPublishRetries,
-			err,
-		)
-		return emittedHead
-	}
-	changes.succeeded()
-	return current
 }
