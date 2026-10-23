@@ -28,12 +28,12 @@ import (
 // /api/v1/* request must carry it in X-Gateway-Secret; the admin endpoints stay
 // unauthenticated, matching the fleet's contract.
 //
-// The write endpoints need four things the read endpoints do not: vaultPath, to
-// read the original bytes before re-rendering them; writer, to hand the rendered
-// file to git-rest; clock, so an approval's instant is injected rather than read
-// from the wall clock; and taskPublisher, which turns a landed write into a
-// change event. vaultName stamps that event so a consumer sharing one topic
-// across vaults can tell its own tasks apart.
+// The write endpoints need five things the read endpoints do not: vaultPath, to
+// read the original bytes before re-rendering them; vaultName, which stamps the
+// change event so a consumer sharing one topic across vaults can tell its own
+// tasks apart; writer, to hand the rendered file to git-rest; clock, so an
+// approval's instant is injected rather than read from the wall clock; and
+// taskPublisher, which turns a landed write into a change event.
 func NewHandler(
 	ctx context.Context,
 	index *vaultapi.Index,

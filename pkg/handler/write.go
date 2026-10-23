@@ -288,12 +288,11 @@ func (d document) write(
 	// failure must not turn a write that happened into an error the client retries,
 	// because that retry would be refused as an already-applied transition.
 	//
-	// That makes the event best-effort, and it is: a failed publish is logged and
-	// the change is lost, not recovered. The pull path that would republish from the
-	// commit diff is not on master yet, so until it lands a broker outage or a
-	// timeout leaves a consumer's view stale for that task. Publishing under
-	// WithoutCancel keeps a client hanging up from being one of those causes — only
-	// the timeout can end it.
+	// The event is therefore best-effort here, but a failure is not silent: the pull
+	// path diffs the commit this write produced and publishes the same change, so a
+	// broker outage or a timeout delays the event rather than dropping it. Publishing
+	// under WithoutCancel keeps a client hanging up from being one of those causes —
+	// only the timeout can end it.
 	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
 	err = deps.publisher.PublishChanged(publishCtx, d.task(deps.vault))
 	cancel()
