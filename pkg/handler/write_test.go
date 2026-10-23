@@ -63,7 +63,7 @@ type fakeMetrics struct{}
 
 func (fakeMetrics) AddFileReads(string, int64) {}
 
-func (fakeMetrics) SetOpenTasks(map[string]int) {}
+func (fakeMetrics) SetOpenTasks(map[vaultapi.OpenTaskKey]int) {}
 
 var _ = Describe("Write endpoints", func() {
 	const secret = "test-secret"
