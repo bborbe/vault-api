@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/bborbe/cqrs/base"
+	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	"github.com/bborbe/run"
 	libsentry "github.com/bborbe/sentry"
@@ -21,6 +23,7 @@ import (
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/gitrest"
 	"github.com/bborbe/vault-api/pkg/handler"
+	"github.com/bborbe/vault-api/pkg/publisher"
 )
 
 func main() {
@@ -41,6 +44,12 @@ type application struct {
 	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                              display:"length"`
 	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                default:"http://vault-obsidian-personal:9090"`
 	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                 default:"30s"`
+	// KafkaBrokers enables the change-event producer. Empty disables it, which is
+	// what a local run wants: without a producer the service still serves reads.
+	KafkaBrokers string `required:"false" arg:"kafka-brokers"    env:"KAFKA_BROKERS"    usage:"Comma separated Kafka brokers for change events. Empty = publishing disabled."`
+	// TopicPrefix selects the per-cluster topic: the event topic is
+	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID.
+	TopicPrefix string `required:"false" arg:"topic-prefix"     env:"TOPIC_PREFIX"     usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
 }
 
 func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
@@ -61,20 +70,82 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		glog.Warningf("initial index build failed: %v", err)
 	}
 
+	factory, err := a.emitterFactory(ctx)
+	if err != nil {
+		return err
+	}
+	// Always a Feed, even with a nil factory: the no-broker case then still owns a
+	// baseline and simply publishes nothing, so the loop needs no nil checks.
+	feed := vaultapi.NewFeed(factory, publisher.IsPermanent)
+	defer feed.Close()
+
 	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
 
 	return run.CancelOnFirstFinish(ctx,
-		a.refresh(index, store),
+		a.refresh(index, store, feed),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
 			ctx, index, a.GatewaySecret, a.VaultPath, writer, libtime.NewCurrentDateTime(),
 		)),
 	)
 }
 
+// emitterFactory validates the change-event config and returns a constructor, or
+// nil when no broker is configured.
+//
+// The constructor is deliberately not called here: NewSyncProducer blocks on an
+// unreachable broker, so building the producer before the HTTP server starts would
+// make the read API's availability depend on Kafka. The refresh loop builds it
+// lazily instead, and a broker outage degrades to "no events yet" rather than
+// "no reads".
+func (a *application) emitterFactory(
+	ctx context.Context,
+) (func(ctx context.Context) (vaultapi.Emitter, func() error, error), error) {
+	if a.KafkaBrokers == "" {
+		glog.Infof("no kafka brokers configured — change events disabled")
+		return nil, nil
+	}
+	// With brokers set but no prefix the topic would be "-agent-task-v1-event",
+	// which is a config mistake rather than a transient failure, so it fails fast
+	// and loudly instead of publishing somewhere unintended.
+	if a.TopicPrefix == "" {
+		return nil, errors.Errorf(ctx, "topic-prefix is required when kafka-brokers is set")
+	}
+	return func(ctx context.Context) (vaultapi.Emitter, func() error, error) {
+		taskPublisher, closePublisher, err := publisher.NewKafkaTaskPublisher(
+			ctx,
+			a.KafkaBrokers,
+			base.TopicPrefix(a.TopicPrefix),
+			libtime.NewCurrentDateTime(),
+		)
+		if err != nil {
+			return nil, nil, errors.Wrapf(ctx, err, "create change-event publisher failed")
+		}
+		glog.Infof("change events enabled on topic prefix %q", a.TopicPrefix)
+		return vaultapi.NewEmitter(
+			vaultapi.Config{
+				VaultPath: a.VaultPath,
+				VaultName: a.VaultName,
+				TasksDir:  a.TasksDir,
+				GoalsDir:  a.GoalsDir,
+			},
+			vaultapi.NewGitDiffer(a.VaultPath),
+			taskPublisher,
+		), closePublisher, nil
+	}, nil
+}
+
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
 // first successful build has not happened yet. A steady HEAD means no file is
 // read, so the file-read counter stays flat between pulls.
-func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) run.Func {
+//
+// After rebuilding it hands the new HEAD to the feed, which publishes one change
+// event per task file that differs from the last published commit. That is what
+// makes externally pushed changes visible without the controller's git scan.
+func (a *application) refresh(
+	index *vaultapi.Index,
+	store storage.PageStorage,
+	feed vaultapi.Feed,
+) run.Func {
 	return func(ctx context.Context) error {
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
@@ -83,13 +154,18 @@ func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) 
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
+				current := vaultapi.ResolveHead(a.VaultPath)
 				ready := index.Readiness().Ready
-				if ready && index.Head() == vaultapi.ResolveHead(a.VaultPath) {
-					continue
+				if !ready || index.Head() != current {
+					if err := index.Build(ctx, store); err != nil {
+						glog.Warningf("index rebuild failed: %v", err)
+					}
 				}
-				if err := index.Build(ctx, store); err != nil {
-					glog.Warningf("index rebuild failed: %v", err)
-				}
+				// Publish after the rebuild, never before it. Building the producer
+				// blocks on an unreachable broker (sarama dials and retries), so
+				// publishing first would stall the index the read path serves for the
+				// whole dial timeout — the coupling this change exists to remove.
+				feed.Advance(ctx, current)
 			}
 		}
 	}

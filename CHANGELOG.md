@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: Detect changes vault-api did not write itself and publish one change event per changed task file. The refresh loop diffs the previous HEAD against the current one with `git diff-tree` — not `git diff`, because the vault volume is mounted read-only and `git diff` refreshes the index — and hands every added, modified or deleted `25 Tasks/*.md` to the `TaskPublisher`. A deletion is read from the old commit, so its tombstone keeps the identifier the file actually carried instead of a slug guess. A pull that touches only goals emits nothing, and the HEAD baseline advances only after a batch publishes, so a Kafka failure retries the same diff rather than dropping it. This is the pull-side producer that must exist before the controller's git scan can retire.
+
 ## v0.6.1
 
 - fix: send the `X-Gateway-Initator` header on every git-rest write. git-rest's auth middleware answers **500** when that header is missing, and it checks it *before* the secret — so every write in v0.6.0 failed with `git_rest_failed` against a real git-rest. The misspelling is deliberate and part of git-rest's frozen public contract; the value is `vault-api`. Found by running the SC probes against the released binary and a local git-rest, not by the unit tests, which stop at a fake writer and never cross the real boundary.
