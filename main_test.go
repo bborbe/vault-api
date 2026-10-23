@@ -122,6 +122,23 @@ var _ = Describe("publishChanges", func() {
 			To(Equal("ccccccc3"))
 	})
 
+	It("never abandons a transient failure, however long the outage", func() {
+		emitter := &fakeEmitter{err: errors.New("dial tcp: connection refused")}
+		publisher := newPublisher(emitter, nil)
+		publisher.isPermanent = func(error) bool { return false }
+
+		for range 5 {
+			Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "bbbbbbb2")).
+				To(Equal("aaaaaaa1"))
+		}
+		Expect(emitter.calls).To(Equal(5))
+
+		// Once the broker is back the pending range publishes normally.
+		emitter.err = nil
+		Expect(publishChanges(context.Background(), publisher, "aaaaaaa1", "bbbbbbb2")).
+			To(Equal("bbbbbbb2"))
+	})
+
 	It("publishes nothing when no producer is configured", func() {
 		// No brokers configured: the loop still runs, it just publishes nothing.
 		Expect(

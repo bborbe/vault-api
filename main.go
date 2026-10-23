@@ -133,11 +133,13 @@ type changePublisher struct {
 
 	// A single event that always fails — a payload over the broker's
 	// message.max.bytes is the concrete case — would otherwise hold the baseline
-	// forever and silently stop every later change from publishing. After
-	// maxPublishRetries attempts on the same range the range is abandoned with an
-	// error line, so one poison event cannot wedge the stream.
-	attempts int
-	rangeKey string
+	// forever and silently stop every later change from publishing. Only errors the
+	// broker will never accept count toward the cap; a connectivity failure is
+	// retried indefinitely, because dropping changes during an outage is exactly
+	// what this feature exists to prevent.
+	attempts    int
+	rangeKey    string
+	isPermanent func(err error) bool
 }
 
 const maxPublishRetries = 3
@@ -160,8 +162,14 @@ func (p *changePublisher) get(ctx context.Context) vaultapi.Emitter {
 }
 
 // fail records a failed attempt on rangeKey and reports whether the range should
-// be abandoned rather than retried again.
-func (p *changePublisher) fail(rangeKey string) bool {
+// be abandoned rather than retried again. A transient failure resets the counter:
+// an outage of any length must not consume the budget meant for a poison message.
+func (p *changePublisher) fail(rangeKey string, err error) bool {
+	if p.isPermanent != nil && !p.isPermanent(err) {
+		p.rangeKey = rangeKey
+		p.attempts = 0
+		return false
+	}
 	if p.rangeKey != rangeKey {
 		p.rangeKey = rangeKey
 		p.attempts = 0
@@ -199,8 +207,8 @@ func (a *application) refresh(
 	factory func(ctx context.Context) (vaultapi.Emitter, func() error, error),
 ) run.Func {
 	return func(ctx context.Context) error {
-		publisher := &changePublisher{factory: factory}
-		defer publisher.closeIfOpen()
+		changes := &changePublisher{factory: factory, isPermanent: publisher.IsPermanent}
+		defer changes.closeIfOpen()
 		emittedHead := vaultapi.ResolveHead(a.VaultPath)
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
@@ -220,7 +228,7 @@ func (a *application) refresh(
 				// blocks on an unreachable broker (sarama dials and retries), so
 				// publishing first would stall the index the read path serves for the
 				// whole dial timeout — the coupling this change exists to remove.
-				emittedHead = publishChanges(ctx, publisher, emittedHead, current)
+				emittedHead = publishChanges(ctx, changes, emittedHead, current)
 			}
 		}
 	}
@@ -231,7 +239,7 @@ func (a *application) refresh(
 // did not, so the same diff is retried on the next tick rather than dropped.
 func publishChanges(
 	ctx context.Context,
-	publisher *changePublisher,
+	changes *changePublisher,
 	emittedHead string,
 	current string,
 ) string {
@@ -253,13 +261,13 @@ func publishChanges(
 	if current == emittedHead {
 		return emittedHead
 	}
-	emitter := publisher.get(ctx)
+	emitter := changes.get(ctx)
 	if emitter == nil {
 		return emittedHead
 	}
 	if err := emitter.Emit(ctx, emittedHead, current); err != nil {
 		rangeKey := emittedHead + ".." + current
-		if publisher.fail(rangeKey) {
+		if changes.fail(rangeKey, err) {
 			glog.Errorf(
 				"abandoning change batch %s after %d failed attempts; later changes resume from %s: %v",
 				rangeKey,
@@ -272,12 +280,12 @@ func publishChanges(
 		glog.Warningf(
 			"publish changes %s failed (attempt %d/%d): %v",
 			rangeKey,
-			publisher.attempts,
+			changes.attempts,
 			maxPublishRetries,
 			err,
 		)
 		return emittedHead
 	}
-	publisher.succeeded()
+	changes.succeeded()
 	return current
 }
