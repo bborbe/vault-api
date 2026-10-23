@@ -12,8 +12,42 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/golang/glog"
+
 	vaultapi "github.com/bborbe/vault-api/pkg"
 )
+
+// mergeCallerHeader names who asked for the merge. It exists so the automatic
+// path — git-rest's conflict resolver — is distinguishable from an operator's
+// curl in the log: without it every merge looks the same, and a probe cannot
+// tell a reconciliation the service performed on its own from one a human
+// staged by hand.
+const mergeCallerHeader = "X-Merge-Caller"
+
+// mergeCallerGitRest is the only value the service recognises. Every other
+// value, and an absent header, is reported as manual: the header is not a
+// credential, so nothing it carries may claim the automatic path.
+const mergeCallerGitRest = "git-rest"
+
+// mergeCallerManual labels every request that did not name itself as the
+// puller.
+const mergeCallerManual = "manual"
+
+// MergeCallerLog records one line per merge request naming its caller. It is a
+// variable rather than a direct glog call, matching vaultapi.MergeLog, so the
+// specs can assert the line without depending on glog's file sinks. Production
+// never reassigns it.
+var MergeCallerLog = glog.Infof
+
+// mergeCaller reports who asked for the merge, confined to the two values the
+// service understands. The result reaches a log line, so a caller-supplied
+// value is never echoed verbatim.
+func mergeCaller(r *http.Request) string {
+	if r.Header.Get(mergeCallerHeader) == mergeCallerGitRest {
+		return mergeCallerGitRest
+	}
+	return mergeCallerManual
+}
 
 // maxMergeBodyBytes caps a merge request. It is far larger than the write
 // endpoints' cap because the body carries three complete file contents rather
@@ -96,6 +130,12 @@ func handleMerge(deps writeDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+
+		// Logged before the merge runs, so a quarantined request is still
+		// attributed: the caller is the fact a probe reads, and a quarantine that
+		// logged nothing would leave the automatic path invisible exactly when it
+		// declined to act.
+		MergeCallerLog("merge: caller=%s path=%s", mergeCaller(r), request.Path)
 
 		reason, err := vaultapi.ResolveDivergedPull(
 			ctx, deps.writer, request.Path, base, ours, theirs,

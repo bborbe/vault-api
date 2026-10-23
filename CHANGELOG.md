@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: Attribute every `POST /api/v1/merge` request to its caller in the log. The handler emits one `merge: caller=<git-rest|manual> path=<path>` line before the merge runs, read from an `X-Merge-Caller` header that names the puller. Only the literal `git-rest` is recognised; an absent header or any other value is reported as `manual`, because the header is not a credential — nothing it carries may claim the automatic path — and an unrecognised value is never echoed into the log. A quarantined request is attributed too, so the automatic path stays visible exactly when it declined to act. This is what lets a probe tell a reconciliation the service performed on its own from one an operator staged with curl.
+
 ## v0.9.0
 
 - feat: Add `POST /api/v1/merge`, the production caller of `ResolveDivergedPull`. It takes the three sides of a diverged file — `base`, `ours` and `theirs`, each with its committer time — resolves them per frontmatter key and writes the merged bytes through git-rest, answering `{"result":"merged"}` or `{"result":"quarantined","reason":…}`. The seam had shipped since v0.6.0 with no caller, so no running path ever invoked the merge; the endpoint supplies one without making `vault-api` a puller, which it is not — git-rest pulls and the refresh loop only compares HEAD.
