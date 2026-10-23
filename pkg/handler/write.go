@@ -41,12 +41,13 @@ const publishTimeout = 5 * time.Second
 // rendered file to git-rest, the clock stamps an approval, and the publisher
 // turns a landed write into a change event on the task topic.
 type writeDeps struct {
-	index     *vaultapi.Index
-	vaultPath string
-	vault     string
-	writer    gitrest.Client
-	clock     libtime.CurrentDateTime
-	publisher publisher.TaskPublisher
+	index         *vaultapi.Index
+	vaultPath     string
+	vault         string
+	writer        gitrest.Client
+	clock         libtime.CurrentDateTime
+	publisher     publisher.TaskPublisher
+	gatewaySecret string
 }
 
 // phaseRequest is the body of PATCH /api/v1/tasks/{id}/phase. ApprovedBy is a
@@ -354,13 +355,26 @@ func taskBody(raw string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(rest[end+len("---")+1:], "\r"), "\n")
 }
 
-// decodeBody reads a JSON body, answering 400 when it is not one.
+// decodeBody reads a JSON body capped at the write endpoints' limit, answering
+// 400 when it is not one.
 func decodeBody(
 	w http.ResponseWriter,
 	r *http.Request,
 	target any,
 ) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWriteBodyBytes))
+	return decodeBodyLimited(w, r, target, maxWriteBodyBytes)
+}
+
+// decodeBodyLimited reads a JSON body capped at limit bytes. The merge endpoint
+// carries three complete file contents, so it cannot share the write endpoints'
+// cap, which was chosen for a phase name, a status name and an approver.
+func decodeBodyLimited(
+	w http.ResponseWriter,
+	r *http.Request,
+	target any,
+	limit int64,
+) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	if err := decoder.Decode(target); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error":  "invalid_body",

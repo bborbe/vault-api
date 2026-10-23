@@ -45,12 +45,13 @@ func NewHandler(
 	taskPublisher publisher.TaskPublisher,
 ) http.Handler {
 	deps := writeDeps{
-		index:     index,
-		vaultPath: vaultPath,
-		vault:     vaultName,
-		writer:    writer,
-		clock:     clock,
-		publisher: taskPublisher,
+		index:         index,
+		vaultPath:     vaultPath,
+		vault:         vaultName,
+		writer:        writer,
+		clock:         clock,
+		publisher:     taskPublisher,
+		gatewaySecret: gatewaySecret,
 	}
 
 	router := mux.NewRouter()
@@ -76,6 +77,9 @@ func NewHandler(
 	api.Path("/tasks/{id}/approve").
 		Methods(http.MethodPost).
 		HandlerFunc(handleApprove(deps))
+	api.Path("/merge").
+		Methods(http.MethodPost).
+		HandlerFunc(handleMerge(deps))
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
 
