@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/bborbe/cqrs/base"
+	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	"github.com/bborbe/run"
 	libsentry "github.com/bborbe/sentry"
@@ -19,6 +21,7 @@ import (
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/handler"
+	"github.com/bborbe/vault-api/pkg/publisher"
 )
 
 func main() {
@@ -38,6 +41,12 @@ type application struct {
 	GoalsDir        string           `required:"false" arg:"goals-dir"        env:"GOALS_DIR"        usage:"goal directory inside the vault"                                                     default:"24 Goals"`
 	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                    display:"length"`
 	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                  default:"30s"`
+	// KafkaBrokers enables the change-event producer. Empty disables it, which is
+	// what a local run wants: without a producer the service still serves reads.
+	KafkaBrokers string `required:"false" arg:"kafka-brokers"    env:"KAFKA_BROKERS"    usage:"Comma separated Kafka brokers for change events. Empty = publishing disabled."`
+	// TopicPrefix selects the per-cluster topic: the event topic is
+	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID.
+	TopicPrefix string `required:"false" arg:"topic-prefix"     env:"TOPIC_PREFIX"     usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
 }
 
 func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
@@ -58,17 +67,70 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		glog.Warningf("initial index build failed: %v", err)
 	}
 
+	emitter, closePublisher, err := a.emitter(ctx)
+	if err != nil {
+		return err
+	}
+	if closePublisher != nil {
+		defer func() {
+			if closeErr := closePublisher(); closeErr != nil {
+				glog.Warningf("close change-event publisher failed: %v", closeErr)
+			}
+		}()
+	}
+
 	return run.CancelOnFirstFinish(ctx,
-		a.refresh(index, store),
+		a.refresh(index, store, emitter),
 		libhttp.NewServer(a.Listen, handler.NewHandler(ctx, index, a.GatewaySecret)),
 	)
+}
+
+// emitter builds the change-event producer, or returns a nil emitter when no
+// broker is configured. A nil emitter leaves the service a pure reader, which is
+// the pre-change behaviour and what a local run wants.
+func (a *application) emitter(ctx context.Context) (vaultapi.Emitter, func() error, error) {
+	if a.KafkaBrokers == "" {
+		glog.Infof("no kafka brokers configured — change events disabled")
+		return nil, nil, nil
+	}
+	taskPublisher, closePublisher, err := publisher.NewKafkaTaskPublisher(
+		ctx,
+		a.KafkaBrokers,
+		base.TopicPrefix(a.TopicPrefix),
+		libtime.NewCurrentDateTime(),
+	)
+	if err != nil {
+		return nil, nil, errors.Wrapf(ctx, err, "create change-event publisher failed")
+	}
+	glog.Infof("change events enabled on topic prefix %q", a.TopicPrefix)
+	return vaultapi.NewEmitter(
+		vaultapi.Config{
+			VaultPath: a.VaultPath,
+			VaultName: a.VaultName,
+			TasksDir:  a.TasksDir,
+			GoalsDir:  a.GoalsDir,
+		},
+		vaultapi.NewGitDiffer(a.VaultPath),
+		taskPublisher,
+	), closePublisher, nil
 }
 
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
 // first successful build has not happened yet. A steady HEAD means no file is
 // read, so the file-read counter stays flat between pulls.
-func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) run.Func {
+//
+// Before rebuilding it publishes one change event per task file that differs
+// between the previous HEAD and the current one. That is what makes externally
+// pushed changes visible without the controller's git scan. The baseline advances
+// only after a successful publish, so a Kafka failure retries the same diff on the
+// next tick instead of losing it.
+func (a *application) refresh(
+	index *vaultapi.Index,
+	store storage.PageStorage,
+	emitter vaultapi.Emitter,
+) run.Func {
 	return func(ctx context.Context) error {
+		emittedHead := vaultapi.ResolveHead(a.VaultPath)
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
 		for {
@@ -76,8 +138,10 @@ func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) 
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
+				current := vaultapi.ResolveHead(a.VaultPath)
+				emittedHead = publishChanges(ctx, emitter, emittedHead, current)
 				ready := index.Readiness().Ready
-				if ready && index.Head() == vaultapi.ResolveHead(a.VaultPath) {
+				if ready && index.Head() == current {
 					continue
 				}
 				if err := index.Build(ctx, store); err != nil {
@@ -86,4 +150,23 @@ func (a *application) refresh(index *vaultapi.Index, store storage.PageStorage) 
 			}
 		}
 	}
+}
+
+// publishChanges emits the events for emittedHead..current and returns the
+// baseline to carry forward: current once the batch published, unchanged when it
+// did not, so the same diff is retried on the next tick rather than dropped.
+func publishChanges(
+	ctx context.Context,
+	emitter vaultapi.Emitter,
+	emittedHead string,
+	current string,
+) string {
+	if emitter == nil || current == "" || emittedHead == "" || current == emittedHead {
+		return emittedHead
+	}
+	if err := emitter.Emit(ctx, emittedHead, current); err != nil {
+		glog.Warningf("publish changes %s..%s failed: %v", emittedHead, current, err)
+		return emittedHead
+	}
+	return current
 }
