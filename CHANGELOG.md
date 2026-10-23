@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.8.0
 
 - feat: Add `POST /api/v1/merge`, the production caller of `ResolveDivergedPull`. It takes the three sides of a diverged file — `base`, `ours` and `theirs`, each with its committer time — resolves them per frontmatter key and writes the merged bytes through git-rest, answering `{"result":"merged"}` or `{"result":"quarantined","reason":…}`. The seam had shipped since v0.6.0 with no caller, so no running path ever invoked the merge; the endpoint supplies one without making `vault-api` a puller, which it is not — git-rest pulls and the refresh loop only compares HEAD.
 - feat: Log one `pull: merged` line per genuinely reconciled file, naming the path and both sides' committer times, so a merge the API performed is distinguishable from one git-rest resolved on its own. The line is emitted only when both sides changed relative to the base and only after the write succeeds: a quarantined merge, a fast-forward and a failed write each log nothing, so the marker cannot be satisfied by an unconditional log.
