@@ -6,6 +6,7 @@ package vaultapi
 
 import (
 	"context"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/bborbe/vault-api/pkg/publisher"
 )
 
+//counterfeiter:generate -o ../mocks/emitter.go --fake-name Emitter . Emitter
+
 // Emitter publishes one change event per task file that differs between two
 // commits.
 //
@@ -25,15 +28,19 @@ import (
 // vault-ui, git-ai-sync — which is what lets the controller's git scan retire.
 // Only task files are published; a goals-only pull emits nothing.
 type Emitter interface {
-	// Emit publishes the change events for oldHead..newHead. A publish failure is
-	// returned so the caller can leave its baseline unadvanced and retry; a file
-	// that cannot be read or parsed is skipped and logged, because the same bytes
-	// will not become parseable on the next tick.
+	// Emit publishes the change events for oldHead..newHead. A read or publish
+	// failure is returned so the caller can leave its baseline unadvanced and retry
+	// the same diff; content that does not parse is skipped and logged, because the
+	// same bytes will not become parseable on the next tick.
 	Emit(ctx context.Context, oldHead string, newHead string) error
 }
 
 // NewEmitter creates an Emitter over the vault described by cfg.
 func NewEmitter(cfg Config, differ Differ, taskPublisher publisher.TaskPublisher) Emitter {
+	// TasksDir arrives from a CLI flag and is compared against git paths, which are
+	// always slash-separated and clean. Normalizing once here means a trailing slash
+	// or a "./" prefix cannot silently stop every path from matching.
+	cfg.TasksDir = path.Clean(filepath.ToSlash(strings.TrimSpace(cfg.TasksDir)))
 	return &emitter{cfg: cfg, differ: differ, publisher: taskPublisher}
 }
 
@@ -91,9 +98,15 @@ func (e *emitter) emitOne(
 		return nil
 	}
 	if change.Status == ChangeDeleted {
-		return e.publisher.PublishDeleted(ctx, task.TaskIdentifier)
+		if err := e.publisher.PublishDeleted(ctx, task.TaskIdentifier); err != nil {
+			return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
+		}
+		return nil
 	}
-	return e.publisher.PublishChanged(ctx, task)
+	if err := e.publisher.PublishChanged(ctx, task); err != nil {
+		return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
+	}
+	return nil
 }
 
 // content reads the bytes the event describes. Both sides are read from the

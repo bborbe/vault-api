@@ -48,6 +48,7 @@ type fakePublisher struct {
 	changed    []lib.Task
 	deleted    []lib.TaskIdentifier
 	changedErr error
+	deletedErr error
 }
 
 func (f *fakePublisher) PublishChanged(_ context.Context, task lib.Task) error {
@@ -57,7 +58,7 @@ func (f *fakePublisher) PublishChanged(_ context.Context, task lib.Task) error {
 
 func (f *fakePublisher) PublishDeleted(_ context.Context, id lib.TaskIdentifier) error {
 	f.deleted = append(f.deleted, id)
-	return nil
+	return f.deletedErr
 }
 
 var _ = Describe("Emitter", func() {
@@ -171,6 +172,16 @@ var _ = Describe("Emitter", func() {
 			}
 			differ.readAtContent = []byte(taskFile)
 			publisher.changedErr = errors.New("kafka unavailable")
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
+		})
+
+		It("returns a tombstone publish error instead of swallowing it", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeDeleted},
+			}
+			differ.readAtContent = []byte(taskFile)
+			publisher.deletedErr = errors.New("kafka unavailable")
 
 			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
 		})

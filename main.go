@@ -184,14 +184,17 @@ func (a *application) refresh(
 				return nil
 			case <-ticker.C:
 				current := vaultapi.ResolveHead(a.VaultPath)
-				emittedHead = publishChanges(ctx, publisher, emittedHead, current)
 				ready := index.Readiness().Ready
-				if ready && index.Head() == current {
-					continue
+				if !ready || index.Head() != current {
+					if err := index.Build(ctx, store); err != nil {
+						glog.Warningf("index rebuild failed: %v", err)
+					}
 				}
-				if err := index.Build(ctx, store); err != nil {
-					glog.Warningf("index rebuild failed: %v", err)
-				}
+				// Publish after the rebuild, never before it. Building the producer
+				// blocks on an unreachable broker (sarama dials and retries), so
+				// publishing first would stall the index the read path serves for the
+				// whole dial timeout — the coupling this change exists to remove.
+				emittedHead = publishChanges(ctx, publisher, emittedHead, current)
 			}
 		}
 	}
@@ -211,8 +214,13 @@ func publishChanges(
 	}
 	// Adopt the first head seen rather than diffing from nothing: with no earlier
 	// commit there is nothing to publish, and starting from "" would replay the
-	// vault's entire history. This also recovers a process that started before the
-	// vault had a readable HEAD.
+	// vault's entire history.
+	//
+	// Known limitation, accepted: the baseline is process-local, so changes pushed
+	// while vault-api was down are adopted silently and never published. Recovering
+	// them needs either a persisted baseline or a full re-publish at startup; until
+	// one exists, a restarted instance's consumers converge on a task's next change
+	// rather than on the restart itself.
 	if emittedHead == "" {
 		return current
 	}

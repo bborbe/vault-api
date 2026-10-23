@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bborbe/errors"
 	"github.com/golang/glog"
@@ -58,11 +59,26 @@ type gitDiffer struct {
 // and `git diff` refreshes the index, which needs a write; diff-tree compares two
 // committed trees and touches no working-tree state.
 func (d *gitDiffer) Diff(ctx context.Context, oldHead string, newHead string) ([]Change, error) {
+	started := time.Now()
 	out, err := d.git(ctx, "diff-tree", "-r", "--no-commit-id", "--name-status", oldHead, newHead)
 	if err != nil {
 		return nil, errors.Wrapf(ctx, err, "diff %s..%s failed", oldHead, newHead)
 	}
-	return parseNameStatus(ctx, out)
+	changes, err := parseNameStatus(ctx, out)
+	if err != nil {
+		return nil, err
+	}
+	// One line per batch, not per path: this runs on every pull and a per-file line
+	// would drown the log on a large diff.
+	glog.V(2).Infof(
+		"git diff-tree %s..%s: %d path(s), %d bytes, %s",
+		oldHead,
+		newHead,
+		len(changes),
+		len(out),
+		time.Since(started),
+	)
+	return changes, nil
 }
 
 // ReadAt returns a path's content at the given commit.

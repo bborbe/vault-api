@@ -75,6 +75,19 @@ var _ = Describe("GitDiffer", func() {
 		}))
 	})
 
+	It("reports a newly added task file", func() {
+		write("25 Tasks/First.md", "---\nstatus: hold\n---\n")
+		oldHead := commit("add first")
+		write("25 Tasks/Probe Task.md", "---\ntask_identifier: abc\nstatus: hold\n---\n# One\n")
+		newHead := commit("add probe")
+
+		changes, err := differ.Diff(ctx, oldHead, newHead)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changes).To(Equal([]vaultapi.Change{
+			{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeAdded},
+		}))
+	})
+
 	It("reports an added file and reads a deleted one from the old commit", func() {
 		write("25 Tasks/Probe Task.md", "---\ntask_identifier: abc\nstatus: hold\n---\n# One\n")
 		oldHead := commit("add probe")
