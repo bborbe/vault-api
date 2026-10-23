@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.7.0
 
 - feat: Detect changes vault-api did not write itself and publish one change event per changed task file. The refresh loop diffs the previous HEAD against the current one with `git diff-tree` — not `git diff`, because the vault volume is mounted read-only and `git diff` refreshes the index — and hands every added, modified or deleted `25 Tasks/*.md` to the `TaskPublisher`. A deletion is read from the old commit, so its tombstone keeps the identifier the file actually carried instead of a slug guess. A pull that touches only goals emits nothing, and the HEAD baseline advances only after a batch publishes, so a Kafka failure retries the same diff rather than dropping it. This is the pull-side producer that must exist before the controller's git scan can retire.
 
