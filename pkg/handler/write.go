@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	lib "github.com/bborbe/agent"
 	libtime "github.com/bborbe/time"
@@ -29,6 +30,11 @@ import (
 // maxWriteBodyBytes caps a write request body. The bodies are a phase name, a
 // status name and an approver, so anything approaching this is a mistake.
 const maxWriteBodyBytes = 64 * 1024
+
+// publishTimeout bounds the change-event publish on the request path. The file is
+// already in git by then, so waiting on a broker can only delay a response whose
+// outcome is decided.
+const publishTimeout = 5 * time.Second
 
 // writeDeps is everything the write endpoints share: the index resolves an id
 // to a path, the vault path supplies the original bytes, the writer sends the
@@ -283,7 +289,14 @@ func (d document) write(
 	// because that retry would be refused as an already-applied transition. Log it
 	// and answer 200 — the pull path republishes the same change from the commit
 	// diff, so the stream converges without the caller.
-	if err := deps.publisher.PublishChanged(ctx, d.task(deps.vault)); err != nil {
+	//
+	// Bounded, because the deferred handle only covers startup: a broker that goes
+	// unreachable later must not hold this request open past a response that is
+	// already decided.
+	publishCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	err = deps.publisher.PublishChanged(publishCtx, d.task(deps.vault))
+	cancel()
+	if err != nil {
 		glog.Errorf("publish change event for task %s failed: %v", d.item.Path, err)
 	}
 	writeJSON(w, http.StatusOK, writeResponse{

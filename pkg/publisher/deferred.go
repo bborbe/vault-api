@@ -46,13 +46,44 @@ func NewDeferred() *Deferred {
 }
 
 // Set installs the built publisher. Publishes issued after this call use it.
+//
+// A nil publisher is ignored rather than stored: storing it would put a non-nil
+// pointer to a nil interface in the holder, so Ready would report true and the
+// next publish would call a method on a nil interface and panic on the request
+// path. Leaving the handle not-ready is the honest reading of "nothing installed".
 func (d *Deferred) Set(p TaskPublisher) {
+	if p == nil {
+		return
+	}
 	d.inner.Store(&p)
 }
 
 // Ready reports whether Set has been called.
 func (d *Deferred) Ready() bool {
 	return d.inner.Load() != nil
+}
+
+// discardPublisher accepts every publish and reports success without sending
+// anything.
+type discardPublisher struct{}
+
+// NewDiscard returns a TaskPublisher that publishes nothing and reports success.
+//
+// It is what a Deferred holds when change events are switched off by
+// configuration. The write path calls the interface unconditionally, so without
+// it a deliberately disabled producer would take the not-ready branch and log an
+// error on every successful write — noise that reads as a fault and can trip
+// error-rate alerting.
+func NewDiscard() TaskPublisher {
+	return discardPublisher{}
+}
+
+func (discardPublisher) PublishChanged(context.Context, lib.Task) error {
+	return nil
+}
+
+func (discardPublisher) PublishDeleted(context.Context, lib.TaskIdentifier) error {
+	return nil
 }
 
 // PublishChanged delegates to the installed publisher, or reports ErrNotReady.

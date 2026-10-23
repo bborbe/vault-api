@@ -100,6 +100,10 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 	return func(ctx context.Context) error {
 		if a.KafkaBrokers == "" {
+			// Install a discard rather than leaving the handle unset: disabled is not the
+			// same state as not-yet-built, and a write against an unset handle would log
+			// an error on every success — noise that reads as a fault.
+			deferred.Set(publisher.NewDiscard())
 			// A warning, not Info: publishing nothing is correct for a local run and a
 			// misconfiguration in a deployed instance, and the two are indistinguishable
 			// from here. It is stated once, at startup.

@@ -76,6 +76,26 @@ var _ = Describe("Deferred", func() {
 		Expect(deferred.PublishDeleted(ctx, "id")).To(MatchError(publishErr))
 	})
 
+	It("ignores a nil publisher instead of storing it", func() {
+		// Storing nil would put a non-nil pointer to a nil interface in the holder:
+		// Ready would report true and the next publish would panic on the request
+		// path.
+		deferred := publisher.NewDeferred()
+		deferred.Set(nil)
+
+		Expect(deferred.Ready()).To(BeFalse())
+		Expect(deferred.PublishChanged(ctx, lib.Task{})).To(MatchError(publisher.ErrNotReady))
+	})
+
+	It("reports success from a discard publisher without recording anything", func() {
+		// A disabled producer must not read as a fault: the write path calls the
+		// interface on every successful write.
+		discard := publisher.NewDiscard()
+
+		Expect(discard.PublishChanged(ctx, lib.Task{TaskIdentifier: "task-1"})).To(Succeed())
+		Expect(discard.PublishDeleted(ctx, "task-2")).To(Succeed())
+	})
+
 	It("keeps the not-ready error a plain sentinel", func() {
 		// A not-ready publish must not read as a permanent broker rejection: a
 		// publisher that is merely still starting would then burn a caller's retry
