@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 )
 
-//counterfeiter:generate -o ../../mocks/task_publisher.go --fake-name FakeTaskPublisher . TaskPublisher
+//counterfeiter:generate -o ../../mocks/task_publisher.go --fake-name TaskPublisher . TaskPublisher
 
 // TaskPublisher publishes task change and deletion events to Kafka.
 type TaskPublisher interface {
@@ -52,6 +52,12 @@ func NewTaskPublisher(
 // lib.TaskV1SchemaID, so the topic name is derived from the schema rather than
 // assembled here. The returned closer releases the producer and must be called
 // when the publisher is no longer needed.
+//
+// The producer-creation error path is deliberately not unit-tested: sarama blocks
+// on an unreachable broker rather than failing fast, so a spec that passes a bogus
+// broker string hangs instead of asserting. Covering it would need an injected
+// producer-constructor seam that no caller needs yet; the path is exercised at
+// deployment, where a bad broker string fails the process at startup.
 func NewKafkaTaskPublisher(
 	ctx context.Context,
 	brokers string,
@@ -84,6 +90,14 @@ type taskPublisher struct {
 }
 
 func (p *taskPublisher) PublishChanged(ctx context.Context, task lib.Task) error {
+	// The object envelope is stamped per publish, not per task: a fresh identifier
+	// and Created = Modified = now. That is deliberate parity with
+	// agent-task-controller/pkg/publisher/task_publisher.go, which is the producer
+	// this one replaces, so a consumer sees the same payload shape from either.
+	// Consumers key on TaskIdentifier — the record key below — and never read
+	// Object.Created or Object.Identifier (verified in agent-task-executor, whose
+	// only per-task timestamp is the queued_at frontmatter field). Republishing
+	// therefore cannot lose a task's creation time, because none is carried here.
 	now := p.currentDateTimeGetter.Now()
 	task.Object = base.Object[base.Identifier]{
 		Identifier: base.Identifier(uuid.New().String()),

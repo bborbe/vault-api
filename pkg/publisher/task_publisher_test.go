@@ -71,6 +71,11 @@ var _ = Describe("TaskPublisher", func() {
 			Expect(publishedTask.Vault).To(Equal("private-personal"))
 			Expect(publishedTask.Object.Created).To(Equal(fixedTime))
 			Expect(publishedTask.Object.Modified).To(Equal(fixedTime))
+			// The two payload fields the executor actually reads must survive the
+			// round trip, not just the envelope.
+			Expect(publishedTask.Frontmatter).To(HaveKeyWithValue("status", "next"))
+			Expect(publishedTask.Frontmatter).To(HaveKeyWithValue("assignee", "user@example.com"))
+			Expect(publishedTask.Content).To(Equal(lib.TaskContent("# Test")))
 		})
 
 		It("returns an error when the send fails", func() {

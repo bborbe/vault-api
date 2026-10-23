@@ -85,7 +85,7 @@ VULNCHECK_IGNORE ?= GO-2026-4923 GO-2026-4514 GO-2022-0470 GO-2026-4772 GO-2026-
 # GO-2026-5932 is golang.org/x/crypto/openpgp — unmaintained, unsafe by design, and
 # unfixed (govulncheck reports no fixed version). It reaches the module graph through
 # github.com/bborbe/agent, which the change-event publisher needs for lib.Task; this
-# service never imports openpgp.
+# service never imports openpgp. Revisit 2027-04-23 (mirrored in .trivyignore).
 
 # Known-benign govulncheck failure modes we swallow. golang.org/x/tools v0.46.0
 # panics on packages containing generic *types.TypeParam during SSA analysis
