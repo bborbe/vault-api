@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.6.1
 
 - fix: send the `X-Gateway-Initator` header on every git-rest write. git-rest's auth middleware answers **500** when that header is missing, and it checks it *before* the secret — so every write in v0.6.0 failed with `git_rest_failed` against a real git-rest. The misspelling is deliberate and part of git-rest's frozen public contract; the value is `vault-api`. Found by running the SC probes against the released binary and a local git-rest, not by the unit tests, which stop at a fake writer and never cross the real boundary.
 
