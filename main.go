@@ -100,7 +100,10 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 	return func(ctx context.Context) error {
 		if a.KafkaBrokers == "" {
-			glog.Infof("no kafka brokers configured — task change events disabled")
+			// A warning, not Info: publishing nothing is correct for a local run and a
+			// misconfiguration in a deployed instance, and the two are indistinguishable
+			// from here. It is stated once, at startup.
+			glog.Warningf("no kafka brokers configured — task change events disabled")
 			<-ctx.Done()
 			return nil
 		}
@@ -120,7 +123,7 @@ func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 			if err == nil {
 				defer func() { _ = closer() }()
 				deferred.Set(taskPublisher)
-				glog.Infof("task change events enabled on prefix %s", a.TopicPrefix)
+				glog.V(1).Infof("task change events enabled on prefix %s", a.TopicPrefix)
 				break
 			}
 			glog.Errorf(

@@ -36,6 +36,11 @@ type Deferred struct {
 
 // NewDeferred creates a Deferred with no publisher installed. Every publish
 // reports ErrNotReady until Set is called.
+//
+// It returns the concrete type rather than TaskPublisher on purpose: Set and Ready
+// exist only on the handle, and a caller holding the interface could not install
+// the publisher it is meant to stand in for. Callers that only publish take it as a
+// TaskPublisher.
 func NewDeferred() *Deferred {
 	return &Deferred{}
 }

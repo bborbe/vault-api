@@ -311,16 +311,15 @@ func (d document) task(vault string) lib.Task {
 // A write re-renders only the frontmatter, so the body is taken from the bytes on
 // disk rather than from the rendered string.
 func taskBody(raw string) string {
-	const delimiter = "---"
-	rest, found := strings.CutPrefix(raw, delimiter)
+	rest, found := strings.CutPrefix(raw, "---")
 	if !found {
 		return ""
 	}
-	end := strings.Index(rest, "\n"+delimiter)
+	end := strings.Index(rest, "\n---")
 	if end < 0 {
 		return ""
 	}
-	return strings.TrimPrefix(rest[end+len(delimiter)+1:], "\n")
+	return strings.TrimPrefix(rest[end+len("---")+1:], "\n")
 }
 
 // decodeBody reads a JSON body, answering 400 when it is not one.
