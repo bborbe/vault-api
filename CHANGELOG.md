@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 - feat: Detect changes vault-api did not write itself and publish one change event per changed task file. The refresh loop diffs the previous HEAD against the current one with `git diff-tree` — not `git diff`, because the vault volume is mounted read-only and `git diff` refreshes the index — and hands every added, modified or deleted `25 Tasks/*.md` to the `TaskPublisher`. A deletion is read from the old commit, so its tombstone keeps the identifier the file actually carried instead of a slug guess. A pull that touches only goals emits nothing, and the HEAD baseline advances only after a batch publishes, so a Kafka failure retries the same diff rather than dropping it. This is the pull-side producer that must exist before the controller's git scan can retire.
 
+## v0.5.0
+
+- feat: Label `vault_api_open_tasks` by each task's own frontmatter `stage`, not by the instance constant, so the gauge reports the environment a task targets instead of the cluster serving it; a task with no `stage` counts under `unknown`. **Breaking for queries:** the instance's own stage moved from the `stage` label to `instance_stage`, so `stage="prod"` now selects tasks targeting prod — a per-cluster selector needs `instance_stage` as well. The `--stage` / `STAGE` flag is now `--instance-stage` / `INSTANCE_STAGE`.
+- feat: Expose `stage` on `GET /api/v1/tasks` items.
+
 ## v0.4.0
 
 - feat: Add `pkg/publisher`, the producer half of the task change-event stream. `TaskPublisher` publishes one `lib.Task` record per task id onto `{prefix}-agent-task-v1-event` through `cdb.EventObjectSender` with `lib.TaskV1SchemaID` — so the topic name is derived from the schema, never assembled by hand — and a tombstone on delete. The interface takes only a context and a task, so the typed write handlers and the pull path that detects externally pushed changes can both call it.
