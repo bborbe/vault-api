@@ -50,7 +50,8 @@ var _ = Describe("Merge endpoint", func() {
 		}, fakeMetrics{})
 		writer = &fakeWriter{}
 		router = handler.NewHandler(
-			ctx, index, secret, vaultPath, writer, libtime.NewCurrentDateTime(),
+			ctx, index, secret, vaultPath, "test", writer,
+			libtime.NewCurrentDateTime(), &recordingPublisher{},
 		)
 	})
 
@@ -217,7 +218,8 @@ var _ = Describe("Merge endpoint", func() {
 		// caller-supplied content to an arbitrary vault-relative path, so it fails
 		// closed rather than becoming an unauthenticated vault write.
 		openRouter := handler.NewHandler(
-			ctx, index, "", vaultPath, writer, libtime.NewCurrentDateTime(),
+			ctx, index, "", vaultPath, "test", writer,
+			libtime.NewCurrentDateTime(), &recordingPublisher{},
 		)
 		encoded, err := json.Marshal(map[string]any{
 			"path":   "25 Tasks/Alpha.md",

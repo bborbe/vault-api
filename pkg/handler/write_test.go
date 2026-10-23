@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	lib "github.com/bborbe/agent"
 	libtime "github.com/bborbe/time"
 	"github.com/bborbe/vault-cli/pkg/storage"
 	. "github.com/onsi/ginkgo/v2"
@@ -22,6 +23,7 @@ import (
 
 	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/handler"
+	"github.com/bborbe/vault-api/pkg/publisher"
 )
 
 // taskIdentifier is the fixed id every fixture task carries, so the rendered
@@ -62,6 +64,34 @@ func (f *fakeWriter) WriteFile(_ context.Context, path string, content []byte) e
 	return nil
 }
 
+// recordingPublisher records the change events a write produced. It is the seam
+// that proves a landed write reaches the task topic without a broker in the test.
+type recordingPublisher struct {
+	changed     []lib.Task
+	deleted     []lib.TaskIdentifier
+	err         error
+	hadDeadline bool
+}
+
+var _ publisher.TaskPublisher = (*recordingPublisher)(nil)
+
+func (r *recordingPublisher) PublishChanged(ctx context.Context, task lib.Task) error {
+	_, r.hadDeadline = ctx.Deadline()
+	if r.err != nil {
+		return r.err
+	}
+	r.changed = append(r.changed, task)
+	return nil
+}
+
+func (r *recordingPublisher) PublishDeleted(_ context.Context, id lib.TaskIdentifier) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.deleted = append(r.deleted, id)
+	return nil
+}
+
 // fakeMetrics satisfies vaultapi.Metrics without registering collectors, so the
 // suite can build as many indexes as it likes.
 type fakeMetrics struct{}
@@ -79,6 +109,7 @@ var _ = Describe("Write endpoints", func() {
 		tasksDir  string
 		index     *vaultapi.Index
 		writer    *fakeWriter
+		published *recordingPublisher
 		router    http.Handler
 	)
 
@@ -99,12 +130,15 @@ var _ = Describe("Write endpoints", func() {
 		}, fakeMetrics{})
 
 		writer = &fakeWriter{}
+		published = &recordingPublisher{}
 		clock := libtime.NewCurrentDateTime()
 		clock.SetNow(libtime.NewDateTime(
 			approvalYear, approvalMonth, approvalDay, approvalHour, 0, 0, 0, time.UTC,
 		))
 
-		router = handler.NewHandler(ctx, index, secret, vaultPath, writer, clock)
+		router = handler.NewHandler(
+			ctx, index, secret, vaultPath, "test", writer, clock, published,
+		)
 	})
 
 	AfterEach(func() {
@@ -169,6 +203,63 @@ var _ = Describe("Write endpoints", func() {
 					"task_identifier: " + taskIdentifier + "\n" +
 					"---\n" + taskBody,
 			))
+		})
+
+		It("publishes one change event for the written task", func() {
+			seed("status: next\nphase: planning\nassignee: bborbe\n" +
+				"task_identifier: " + taskIdentifier + "\n")
+
+			recorder := call(
+				http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/phase",
+				`{"phase":"execution"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(published.changed).To(HaveLen(1))
+			event := published.changed[0]
+			Expect(event.TaskIdentifier).To(Equal(lib.TaskIdentifier(taskIdentifier)))
+			Expect(event.Vault).To(Equal("test"))
+			Expect(event.Frontmatter["phase"]).To(Equal("execution"))
+			// The body is carried unchanged: a write re-renders only the frontmatter.
+			Expect(event.Content).To(Equal(lib.TaskContent(taskBody)))
+			// A mutation is an upsert, never a delete: a tombstone here would drop the
+			// task from the executor's view.
+			Expect(published.deleted).To(BeEmpty())
+			// Bounded, so a broker lost after startup cannot hold the request open.
+			Expect(published.hadDeadline).To(BeTrue())
+		})
+
+		It("publishes nothing when git-rest rejects the write", func() {
+			// A write that never landed must not appear on the topic, or a consumer
+			// would show a change the vault does not have.
+			seed("status: next\nphase: planning\n" +
+				"task_identifier: " + taskIdentifier + "\n")
+			writer.err = errors.New("git-rest unavailable")
+
+			recorder := call(
+				http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/phase",
+				`{"phase":"execution"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusBadGateway))
+			Expect(published.changed).To(BeEmpty())
+		})
+
+		It("answers 200 when the change event cannot be published", func() {
+			// The file is already in git, so the write succeeded. Reporting an error
+			// would make the client retry a transition that is now applied, and the
+			// retry would be refused as illegal.
+			seed("status: next\nphase: planning\n" +
+				"task_identifier: " + taskIdentifier + "\n")
+			published.err = errors.New("broker unavailable")
+
+			recorder := call(
+				http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/phase",
+				`{"phase":"execution"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
 		})
 
 		It("refuses an illegal transition with the named error and the graph", func() {
@@ -246,6 +337,32 @@ var _ = Describe("Write endpoints", func() {
 			Expect(decode(recorder)["error"]).To(Equal("approval_required"))
 			Expect(writer.calls).To(BeEmpty())
 		})
+	})
+
+	It("publishes from the status and approve handlers too", func() {
+		// All three handlers call document.write, so one spec per endpoint proves the
+		// shared chokepoint is what publishes rather than the phase handler alone.
+		seed("status: next\nphase: execution\n" +
+			"task_identifier: " + taskIdentifier + "\n")
+		call(
+			http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/status",
+			`{"status":"in_progress"}`,
+		)
+		Expect(published.changed).To(HaveLen(1))
+		// Assert the payload, not just the count: a wrong status in the event would
+		// otherwise pass while the chokepoint visibly fired.
+		Expect(published.changed[0].Frontmatter["status"]).To(Equal("in_progress"))
+
+		published.changed = nil
+		seed("status: todo\nphase: todo\n" +
+			"task_identifier: " + taskIdentifier + "\n")
+		call(
+			http.MethodPost, "/api/v1/tasks/"+taskIdentifier+"/approve",
+			`{"approved_by":"operator"}`,
+		)
+		Expect(published.changed).To(HaveLen(1))
+		Expect(published.changed[0].Frontmatter["approved_by"]).To(Equal("operator"))
+		Expect(published.changed[0].Frontmatter["phase"]).To(Equal("planning"))
 	})
 
 	Describe("PATCH /api/v1/tasks/{id}/status", func() {
@@ -360,7 +477,7 @@ var _ = Describe("Write endpoints", func() {
 			zero := libtime.NewCurrentDateTime()
 			zero.SetNow(libtime.DateTime{})
 			zeroClock := handler.NewHandler(
-				ctx, index, secret, vaultPath, writer, zero,
+				ctx, index, secret, vaultPath, "test", writer, zero, published,
 			)
 			request := httptest.NewRequest(
 				http.MethodPost,
