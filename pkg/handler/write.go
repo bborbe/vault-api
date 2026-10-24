@@ -103,7 +103,7 @@ func handlePatchPhase(deps writeDeps) http.HandlerFunc {
 			writeRefusalError(w, err, document.item.Path)
 			return
 		}
-		document.frontmatter["phase"] = string(target)
+		document.set("phase", string(target))
 		document.write(ctx, w, deps, document.item.Status, string(target))
 	}
 }
@@ -134,7 +134,7 @@ func handlePatchStatus(deps writeDeps) http.HandlerFunc {
 			writeRefusalError(w, err, document.item.Path)
 			return
 		}
-		document.frontmatter["status"] = string(target)
+		document.set("status", string(target))
 		document.write(ctx, w, deps, string(target), string(document.phase()))
 	}
 }
@@ -165,14 +165,14 @@ func handleApprove(deps writeDeps) http.HandlerFunc {
 			writeRefusalError(w, err, document.item.Path)
 			return
 		}
-		document.frontmatter["approved_by"] = request.ApprovedBy
-		document.frontmatter["approved_at"] = now
-		document.frontmatter["phase"] = string(domain.TaskPhasePlanning)
+		document.set("approved_by", request.ApprovedBy)
+		document.set("approved_at", now)
+		document.set("phase", string(domain.TaskPhasePlanning))
 		// The owner is fixed at approval time and only when it is missing: an
 		// existing assignee is never overwritten, and the approver is the only
 		// identity this API knows, so it stands in for vault-cli's currentUser.
 		if document.item.Assignee == "" {
-			document.frontmatter["assignee"] = request.ApprovedBy
+			document.set("assignee", request.ApprovedBy)
 		}
 		document.write(
 			ctx, w, deps,
@@ -182,11 +182,22 @@ func handleApprove(deps writeDeps) http.HandlerFunc {
 }
 
 // document is one task file loaded for writing: the indexed projection, the raw
-// bytes it was parsed from, and the frontmatter map that will be re-rendered.
+// bytes it was parsed from, the frontmatter map reads go through, and the subset
+// of keys this handler changed. Only `changed` is written back, so every other
+// byte of the frontmatter block survives the write.
 type document struct {
 	item        vaultapi.TaskItem
 	raw         []byte
 	frontmatter map[string]any
+	changed     map[string]any
+}
+
+// set records a frontmatter change. Reads keep going through frontmatter; the
+// write path patches only the keys recorded here, so a phase transition does not
+// re-render the keys it never touched.
+func (d *document) set(key string, value any) {
+	d.frontmatter[key] = value
+	d.changed[key] = value
 }
 
 // loadDocument resolves the id through the index, reads the file, and parses its
@@ -230,7 +241,12 @@ func loadDocument(
 		})
 		return document{}, false
 	}
-	return document{item: item, raw: raw, frontmatter: frontmatter}, true
+	return document{
+		item:        item,
+		raw:         raw,
+		frontmatter: frontmatter,
+		changed:     map[string]any{},
+	}, true
 }
 
 // phase returns the task's current phase, normalized. An absent or unparseable
@@ -260,15 +276,15 @@ func (d document) status() domain.TaskStatus {
 	return normalized
 }
 
-// write renders the frontmatter back over the original bytes, hands the whole
-// file to git-rest, and answers with the values the caller asked for.
+// write patches the changed frontmatter keys into the original bytes, hands the
+// whole file to git-rest, and answers with the values the caller asked for.
 func (d document) write(
 	ctx context.Context,
 	w http.ResponseWriter,
 	deps writeDeps,
 	status, phase string,
 ) {
-	rendered, err := storage.SerializeFrontmatter(ctx, d.frontmatter, string(d.raw))
+	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(d.raw))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  "render_failed",

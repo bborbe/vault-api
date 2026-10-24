@@ -14,7 +14,7 @@ require (
 	github.com/bborbe/sentry v1.10.6
 	github.com/bborbe/service v1.11.1
 	github.com/bborbe/time v1.27.18
-	github.com/bborbe/vault-cli v0.180.0
+	github.com/bborbe/vault-cli v0.183.0
 	github.com/golang/glog v1.2.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
@@ -27,10 +27,12 @@ require (
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/bborbe/argument/v2 v2.13.6 // indirect
+	github.com/bborbe/boltkv v1.16.2 // indirect
 	github.com/bborbe/collection v1.21.4 // indirect
 	github.com/bborbe/k8s v1.14.24 // indirect
 	github.com/bborbe/kv v1.21.19 // indirect
 	github.com/bborbe/math v1.4.16 // indirect
+	github.com/bborbe/memorykv v1.6.19 // indirect
 	github.com/bborbe/parse v1.12.4 // indirect
 	github.com/bborbe/strimzi v1.8.22 // indirect
 	github.com/bborbe/validation v1.5.6 // indirect
