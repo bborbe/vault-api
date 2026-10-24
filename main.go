@@ -40,15 +40,22 @@ type application struct {
 	SentryDSN   string `required:"false" arg:"sentry-dsn"   env:"SENTRY_DSN"   usage:"Sentry DSN"   display:"length"`
 	SentryProxy string `required:"false" arg:"sentry-proxy" env:"SENTRY_PROXY" usage:"Sentry Proxy"`
 
-	Listen          string           `required:"false" arg:"listen"           env:"LISTEN"           usage:"HTTP listen address"                                                                                                                default:":9090"`
-	VaultPath       string           `required:"true"  arg:"vault-path"       env:"VAULT_PATH"       usage:"path to the vault git working tree"`
-	VaultName       string           `required:"true"  arg:"vault-name"       env:"VAULT_NAME"       usage:"vault name reported in responses"`
-	InstanceStage   string           `required:"false" arg:"instance-stage"   env:"INSTANCE_STAGE"   usage:"stage of this vault-api instance, reported as the instance_stage metric label (dev, prod). Distinct from the per-task stage label." default:""`
-	TasksDir        string           `required:"false" arg:"tasks-dir"        env:"TASKS_DIR"        usage:"task directory inside the vault"                                                                                                    default:"25 Tasks"`
-	GoalsDir        string           `required:"false" arg:"goals-dir"        env:"GOALS_DIR"        usage:"goal directory inside the vault"                                                                                                    default:"24 Goals"`
-	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                              display:"length"`
-	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                default:"http://vault-obsidian-personal:9090"`
-	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                 default:"30s"`
+	Listen    string `required:"false" arg:"listen"           env:"LISTEN"           usage:"HTTP listen address"                                                                                                                 default:":9090"`
+	VaultPath string `required:"true"  arg:"vault-path"       env:"VAULT_PATH"       usage:"path to the vault git working tree"`
+	VaultName string `required:"true"  arg:"vault-name"       env:"VAULT_NAME"       usage:"vault name reported in responses"`
+	// EventVaultName is the vault slug stamped on task change events as
+	// lib.Task.Vault. It is a routing identity, not a display name: a consumer
+	// that shares one topic across vaults owns a task only when this value equals
+	// its own, and the agent-task-controller stamps its VAULT_NAME into the same
+	// field. Empty falls back to VaultName, which is correct only where the
+	// display name and the routing slug coincide.
+	EventVaultName  string           `required:"false" arg:"event-vault-name" env:"EVENT_VAULT_NAME" usage:"vault slug stamped on task change events; must equal the controller's VAULT_NAME and the executor's TASK_VAULT. Empty = vault-name."`
+	InstanceStage   string           `required:"false" arg:"instance-stage"   env:"INSTANCE_STAGE"   usage:"stage of this vault-api instance, reported as the instance_stage metric label (dev, prod). Distinct from the per-task stage label."  default:""`
+	TasksDir        string           `required:"false" arg:"tasks-dir"        env:"TASKS_DIR"        usage:"task directory inside the vault"                                                                                                     default:"25 Tasks"`
+	GoalsDir        string           `required:"false" arg:"goals-dir"        env:"GOALS_DIR"        usage:"goal directory inside the vault"                                                                                                     default:"24 Goals"`
+	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                               display:"length"`
+	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                 default:"http://vault-obsidian-personal:9090"`
+	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                  default:"30s"`
 	// KafkaBrokers enables the change-event producer. Empty disables it, which is
 	// what a local run wants: without a producer the service still serves reads and
 	// writes, it just publishes nothing.
@@ -56,6 +63,18 @@ type application struct {
 	// TopicPrefix selects the per-cluster topic: the event topic is
 	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID.
 	TopicPrefix string `required:"false" arg:"topic-prefix"     env:"TOPIC_PREFIX"     usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
+}
+
+// eventVaultName is the vault identity this instance stamps on published task
+// change events. It is deliberately separate from VaultName: VaultName is what
+// the read API reports and what an operator sees, while this is the routing slug
+// every consumer compares against. Where they differ, the event must carry the
+// slug or the task is dropped as foreign by the executor that owns it.
+func (a *application) eventVaultName() string {
+	if a.EventVaultName != "" {
+		return a.EventVaultName
+	}
+	return a.VaultName
 }
 
 func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
@@ -101,7 +120,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		a.refresh(index, store, feed),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
-			ctx, index, a.GatewaySecret, a.VaultPath, a.VaultName, writer,
+			ctx, index, a.GatewaySecret, a.VaultPath, a.eventVaultName(), writer,
 			libtime.NewCurrentDateTime(), taskPublisher,
 		)),
 	)
@@ -180,7 +199,10 @@ func (a *application) emitterFactory(
 		return vaultapi.NewEmitter(
 			vaultapi.Config{
 				VaultPath: a.VaultPath,
-				VaultName: a.VaultName,
+				// The emitter stamps Vault on every task event, so it takes the
+				// routing slug rather than the reported display name. The index
+				// above keeps a.VaultName for its responses.
+				VaultName: a.eventVaultName(),
 				TasksDir:  a.TasksDir,
 				GoalsDir:  a.GoalsDir,
 			},
