@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: Persist the change-event baseline so a restart no longer skips the commits it missed. `--event-baseline-path` / `EVENT_BASELINE_PATH` names a file that outlives the process, and the feed resumes from the last published commit instead of adopting the current HEAD. Before this the baseline was process-local, so every commit pushed while the process was down was adopted silently and never published: a task's last record stayed at the phase it held when the instance was last up, and the executor drove it at that phase indefinitely. Two paths could drop the range — the restart gap, and a range abandoned after `MaxPublishRetries` — and this repairs both because neither could be excluded, not because both were observed. Empty keeps the previous process-local behaviour, so the flag is opt-in per instance.
+
 ## v0.11.0
 
 - feat: Let `POST /api/v1/merge` return the merged bytes instead of writing them. A new optional `apply` field defaults to `true`, keeping the original contract for a caller with no working tree of its own; `apply: false` answers `{"result":"merged","content":…}` and writes nothing. git-rest must send `false`, because it calls from inside its own pull holding the repository mutex: asking it to write back through its own API waits on the lock the pull already holds, and the request never returns — measured locally, the client timed out at 30s with vault-api's handler still blocked on the write. The `pull: merged` marker now comes from `LogResolvedMerge`, shared by both paths, so the puller's automatic path is not silent just because the writing moved to the caller.

@@ -37,10 +37,27 @@ type Feed interface {
 // before it is abandoned.
 const MaxPublishRetries = 3
 
-// NewFeed creates a Feed over the given factory. isPermanent classifies an Emit
-// error as one the broker will never accept; nil treats every error as permanent.
+// NewFeed creates a Feed over the given factory with a process-local baseline.
+// isPermanent classifies an Emit error as one the broker will never accept; nil
+// treats every error as permanent.
+//
+// A process-local baseline cannot survive a restart, so a caller that can persist
+// one should use NewFeedWithBaseline instead.
 func NewFeed(factory EmitterFactory, isPermanent func(err error) bool) Feed {
-	return &feed{factory: factory, isPermanent: isPermanent}
+	return NewFeedWithBaseline(factory, isPermanent, "")
+}
+
+// NewFeedWithBaseline creates a Feed that starts from baseline rather than
+// adopting the first HEAD it sees.
+//
+// An empty baseline is the first run: there is no earlier commit to compare
+// against, so adopting the current HEAD is correct and publishes nothing.
+func NewFeedWithBaseline(
+	factory EmitterFactory,
+	isPermanent func(err error) bool,
+	baseline string,
+) Feed {
+	return &feed{factory: factory, isPermanent: isPermanent, baseline: baseline}
 }
 
 type feed struct {
@@ -62,9 +79,11 @@ func (f *feed) Advance(ctx context.Context, head string) string {
 	// commit there is nothing to publish, and starting from "" would replay the
 	// vault's entire history.
 	//
-	// Known limitation, accepted: the baseline is process-local, so changes pushed
-	// while the process was down are adopted silently and never published.
-	// Recovering them needs a persisted baseline or a full re-publish at startup.
+	// This is only correct on a genuine first run. A restart with no persisted
+	// baseline reaches the same branch, and there the adoption is a silent loss:
+	// every commit pushed while the process was down is skipped and never
+	// published. That is why a caller passes a persisted baseline through
+	// NewFeedWithBaseline — with one, this branch is not reached at all.
 	if f.baseline == "" {
 		f.baseline = head
 		return f.baseline
