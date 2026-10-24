@@ -12,8 +12,42 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/golang/glog"
+
 	vaultapi "github.com/bborbe/vault-api/pkg"
 )
+
+// mergeCallerHeader names who asked for the merge. It exists so the automatic
+// path — git-rest's conflict resolver — is distinguishable from an operator's
+// curl in the log: without it every merge looks the same, and a probe cannot
+// tell a reconciliation the service performed on its own from one a human
+// staged by hand.
+const mergeCallerHeader = "X-Merge-Caller"
+
+// mergeCallerGitRest is the only value the service recognises. Every other
+// value, and an absent header, is reported as manual: the header is not a
+// credential, so nothing it carries may claim the automatic path.
+const mergeCallerGitRest = "git-rest"
+
+// mergeCallerManual labels every request that did not name itself as the
+// puller.
+const mergeCallerManual = "manual"
+
+// MergeCallerLog records one line per merge request naming its caller. It is a
+// variable rather than a direct glog call, matching vaultapi.MergeLog, so the
+// specs can assert the line without depending on glog's file sinks. Production
+// never reassigns it.
+var MergeCallerLog = glog.Infof
+
+// mergeCaller reports who asked for the merge, confined to the two values the
+// service understands. The result reaches a log line, so a caller-supplied
+// value is never echoed verbatim.
+func mergeCaller(r *http.Request) string {
+	if r.Header.Get(mergeCallerHeader) == mergeCallerGitRest {
+		return mergeCallerGitRest
+	}
+	return mergeCallerManual
+}
 
 // maxMergeBodyBytes caps a merge request. It is far larger than the write
 // endpoints' cap because the body carries three complete file contents rather
@@ -38,14 +72,25 @@ type mergeRequest struct {
 	Base   mergeSide `json:"base"`
 	Ours   mergeSide `json:"ours"`
 	Theirs mergeSide `json:"theirs"`
+	// Apply decides whether the service writes the merged bytes or returns them.
+	// Omitted means true, which keeps the endpoint's original contract: a caller
+	// with no working tree of its own gets the file written through git-rest.
+	//
+	// git-rest itself sends false, and must. It is the writer — and it is inside
+	// the pull when it calls, holding the repository mutex. Asking it to write
+	// through its own API deadlocks against the pull it is running: measured
+	// locally, the request never returned and the client timed out after 30s.
+	Apply *bool `json:"apply"`
 }
 
 // mergeResponse reports what the merge decided. Reason is empty when the merge
-// resolved; otherwise it names why the file was quarantined.
+// resolved; otherwise it names why the file was quarantined. Content is set only
+// when the caller asked not to have the file written.
 type mergeResponse struct {
-	Path   string `json:"path"`
-	Result string `json:"result"`
-	Reason string `json:"reason,omitempty"`
+	Path    string `json:"path"`
+	Result  string `json:"result"`
+	Reason  string `json:"reason,omitempty"`
+	Content string `json:"content,omitempty"`
 }
 
 // handleMerge resolves a diverged file and writes the outcome through git-rest.
@@ -97,6 +142,20 @@ func handleMerge(deps writeDeps) http.HandlerFunc {
 			return
 		}
 
+		// Logged before the merge runs, so a quarantined request is still
+		// attributed: the caller is the fact a probe reads, and a quarantine that
+		// logged nothing would leave the automatic path invisible exactly when it
+		// declined to act.
+		MergeCallerLog("merge: caller=%s path=%s", mergeCaller(r), request.Path)
+
+		// The puller takes the bytes rather than having them written back: it is
+		// mid-merge holding the repository, so a write through git-rest's own API
+		// would wait on the mutex the pull already holds.
+		if request.Apply != nil && !*request.Apply {
+			mergeUnapplied(w, request.Path, base, ours, theirs)
+			return
+		}
+
 		reason, err := vaultapi.ResolveDivergedPull(
 			ctx, deps.writer, request.Path, base, ours, theirs,
 		)
@@ -121,6 +180,39 @@ func handleMerge(deps writeDeps) http.HandlerFunc {
 			Result: "merged",
 		})
 	}
+}
+
+// mergeUnapplied resolves the merge and hands the bytes back instead of writing
+// them. It is the puller's path: the caller owns the working tree, so the file
+// is staged there rather than written back through an API the caller is itself
+// blocking.
+//
+// It calls MergeFile directly rather than ResolveDivergedPull, because the whole
+// difference between the two paths is the write — and with no write there is
+// nothing left for ResolveDivergedPull to do that MergeFile has not already done.
+func mergeUnapplied(
+	w http.ResponseWriter,
+	path string,
+	base, ours, theirs vaultapi.Side,
+) {
+	result := vaultapi.MergeFile(base, ours, theirs)
+	if result.Quarantine {
+		writeJSON(w, http.StatusOK, mergeResponse{
+			Path:   path,
+			Result: "quarantined",
+			Reason: string(result.Reason),
+		})
+		return
+	}
+	// The same marker the write path emits: the service decided these bytes, and
+	// only the writing moved to the caller. Without it a probe reading the log
+	// would see the puller's automatic path as silent.
+	vaultapi.LogResolvedMerge(path, base, ours, theirs)
+	writeJSON(w, http.StatusOK, mergeResponse{
+		Path:    path,
+		Result:  "merged",
+		Content: string(result.Content),
+	})
 }
 
 // mergePathError names why a path cannot be merged, or returns "" when it can.

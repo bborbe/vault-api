@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strings"
 
 	libtime "github.com/bborbe/time"
+	"github.com/golang/glog"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -107,6 +109,60 @@ var _ = Describe("Merge endpoint", func() {
 		// the merge rather than from either side.
 		Expect(writer.calls[0].content).To(ContainSubstring("phase: execution"))
 		Expect(writer.calls[0].content).To(ContainSubstring("title: Changed"))
+	})
+
+	It("returns the merged bytes instead of writing when apply is false", func() {
+		// The puller is mid-merge holding its repository, so a write back through
+		// git-rest's own API would wait on the mutex the pull holds. It takes the
+		// bytes and stages them itself.
+		recorder := call(map[string]any{
+			"path":  "25 Tasks/Alpha.md",
+			"apply": false,
+			"base": side(
+				"---\nphase: planning\ntitle: Base\n---\nbody\n",
+				"2026-10-20T10:00:00Z",
+			),
+			"ours": side(
+				"---\nphase: execution\ntitle: Base\n---\nbody\n",
+				"2026-10-22T10:00:00Z",
+			),
+			"theirs": side(
+				"---\nphase: planning\ntitle: Changed\n---\nbody\n",
+				"2026-10-21T10:00:00Z",
+			),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		decoded := decode(recorder)
+		Expect(decoded["result"]).To(Equal("merged"))
+		content, ok := decoded["content"].(string)
+		Expect(ok).To(BeTrue(), "merged response must carry the bytes")
+		Expect(content).To(ContainSubstring("phase: execution"))
+		Expect(content).To(ContainSubstring("title: Changed"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("quarantines without content when apply is false", func() {
+		recorder := call(map[string]any{
+			"path":  "25 Tasks/Alpha.md",
+			"apply": false,
+			"base": side(
+				"---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z",
+			),
+			"ours": side(
+				"---\ntitle: Base\n---\nmine\n", "2026-10-22T10:00:00Z",
+			),
+			"theirs": side(
+				"---\ntitle: Base\n---\ntheirs\n", "2026-10-21T10:00:00Z",
+			),
+		})
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		decoded := decode(recorder)
+		Expect(decoded["result"]).To(Equal("quarantined"))
+		Expect(decoded["reason"]).To(Equal(string(vaultapi.ReasonBodyConflict)))
+		Expect(decoded).NotTo(HaveKey("content"))
+		Expect(writer.calls).To(BeEmpty())
 	})
 
 	It("quarantines a body conflict without writing", func() {
@@ -274,5 +330,66 @@ var _ = Describe("Merge endpoint", func() {
 		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
 		Expect(decode(recorder)["reason"]).To(Equal("path is required"))
 		Expect(writer.calls).To(BeEmpty())
+	})
+
+	Describe("caller attribution", func() {
+		var lines []string
+
+		BeforeEach(func() {
+			lines = nil
+			handler.MergeCallerLog = func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}
+		})
+
+		AfterEach(func() {
+			handler.MergeCallerLog = glog.Infof
+		})
+
+		diverged := func() map[string]any {
+			return map[string]any{
+				"path":   "25 Tasks/Alpha.md",
+				"base":   side("---\ntitle: Base\n---\nbody\n", "2026-10-20T10:00:00Z"),
+				"ours":   side("---\ntitle: Ours\n---\nbody\n", "2026-10-22T10:00:00Z"),
+				"theirs": side("---\ntitle: Theirs\n---\nbody\n", "2026-10-21T10:00:00Z"),
+			}
+		}
+
+		withCaller := func(value string) *httptest.ResponseRecorder {
+			encoded, err := json.Marshal(diverged())
+			Expect(err).To(BeNil())
+			request := httptest.NewRequest(
+				http.MethodPost, "/api/v1/merge", bytes.NewBuffer(encoded),
+			)
+			request.Header.Set("X-Gateway-Secret", secret)
+			request.Header.Set("Content-Type", "application/json")
+			if value != "" {
+				request.Header.Set("X-Merge-Caller", value)
+			}
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			return recorder
+		}
+
+		It("attributes the puller's request to git-rest", func() {
+			Expect(withCaller("git-rest").Code).To(Equal(http.StatusOK))
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(Equal("merge: caller=git-rest path=25 Tasks/Alpha.md"))
+		})
+
+		It("reports a request without the header as manual", func() {
+			Expect(withCaller("").Code).To(Equal(http.StatusOK))
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(Equal("merge: caller=manual path=25 Tasks/Alpha.md"))
+		})
+
+		// The header is not a credential: a value the service does not recognise
+		// must not be able to claim the automatic path, and must not reach the log
+		// verbatim either.
+		It("reports an unrecognised value as manual rather than echoing it", func() {
+			Expect(withCaller("git-rest\nforged line").Code).To(Equal(http.StatusOK))
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(Equal("merge: caller=manual path=25 Tasks/Alpha.md"))
+		})
 	})
 })
