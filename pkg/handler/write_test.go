@@ -177,7 +177,7 @@ var _ = Describe("Write endpoints", func() {
 	}
 
 	Describe("PATCH /api/v1/tasks/{id}/phase", func() {
-		It("writes the exact rendered file through git-rest", func() {
+		It("patches only the changed key and leaves the rest byte-identical", func() {
 			seed("status: next\nphase: planning\nassignee: bborbe\n" +
 				"task_identifier: " + taskIdentifier + "\n")
 
@@ -197,9 +197,9 @@ var _ = Describe("Write endpoints", func() {
 			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
 			Expect(writer.calls[0].content).To(Equal(
 				"---\n" +
-					"assignee: bborbe\n" +
-					"phase: execution\n" +
 					"status: next\n" +
+					"phase: execution\n" +
+					"assignee: bborbe\n" +
 					"task_identifier: " + taskIdentifier + "\n" +
 					"---\n" + taskBody,
 			))
@@ -366,7 +366,7 @@ var _ = Describe("Write endpoints", func() {
 	})
 
 	Describe("PATCH /api/v1/tasks/{id}/status", func() {
-		It("writes the exact rendered file through git-rest", func() {
+		It("patches only the changed key and leaves the rest byte-identical", func() {
 			seed("status: next\nphase: execution\nassignee: bborbe\n" +
 				"task_identifier: " + taskIdentifier + "\n")
 
@@ -385,9 +385,9 @@ var _ = Describe("Write endpoints", func() {
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].content).To(Equal(
 				"---\n" +
-					"assignee: bborbe\n" +
-					"phase: execution\n" +
 					"status: in_progress\n" +
+					"phase: execution\n" +
+					"assignee: bborbe\n" +
 					"task_identifier: " + taskIdentifier + "\n" +
 					"---\n" + taskBody,
 			))
@@ -444,12 +444,12 @@ var _ = Describe("Write endpoints", func() {
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].content).To(Equal(
 				"---\n" +
+					"status: next\n" +
+					"phase: planning\n" +
+					"assignee: bborbe\n" +
+					"task_identifier: " + taskIdentifier + "\n" +
 					"approved_at: 2026-10-23T12:00:00Z\n" +
 					"approved_by: operator\n" +
-					"assignee: bborbe\n" +
-					"phase: planning\n" +
-					"status: next\n" +
-					"task_identifier: " + taskIdentifier + "\n" +
 					"---\n" + taskBody,
 			))
 		})
