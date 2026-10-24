@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.12.1
 
 - fix: A task write now patches only the frontmatter keys the handler changed, so an API edit stops re-rendering the whole block. `document.write` called `storage.SerializeFrontmatter`, which re-marshals the entire block from a map and therefore rewrites every untouched key into `yaml.Marshal`'s own key order, indentation and quoting — measured on a `planning → execution` transition, which turned a two-space double-quoted `goals` entry into a four-space single-quoted one. The document now records each change through `set`, and the write path calls `storage.PatchFrontmatter` (vault-cli v0.183.0) with that subset, leaving every other byte of the block intact. Approval, phase and status writes all go through it; `phase`, `status`, `assignee`, `task_identifier` and any key the handler did not touch survive unchanged.
 
