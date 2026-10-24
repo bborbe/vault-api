@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.11.0
 
 - feat: Let `POST /api/v1/merge` return the merged bytes instead of writing them. A new optional `apply` field defaults to `true`, keeping the original contract for a caller with no working tree of its own; `apply: false` answers `{"result":"merged","content":…}` and writes nothing. git-rest must send `false`, because it calls from inside its own pull holding the repository mutex: asking it to write back through its own API waits on the lock the pull already holds, and the request never returns — measured locally, the client timed out at 30s with vault-api's handler still blocked on the write. The `pull: merged` marker now comes from `LogResolvedMerge`, shared by both paths, so the puller's automatic path is not silent just because the writing moved to the caller.
 - feat: Attribute every `POST /api/v1/merge` request to its caller in the log. The handler emits one `merge: caller=<git-rest|manual> path=<path>` line before the merge runs, read from an `X-Merge-Caller` header that names the puller. Only the literal `git-rest` is recognised; an absent header or any other value is reported as `manual`, because the header is not a credential — nothing it carries may claim the automatic path — and an unrecognised value is never echoed into the log. A quarantined request is attributed too, so the automatic path stays visible exactly when it declined to act. This is what lets a probe tell a reconciliation the service performed on its own from one an operator staged with curl.
