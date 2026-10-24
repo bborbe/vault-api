@@ -48,6 +48,13 @@ type Readiness struct {
 	Ready           bool   `json:"ready"`
 	Vault           string `json:"vault"`
 	IndexAgeSeconds int64  `json:"index_age_seconds"`
-	Head            string `json:"head"`
-	Warnings        int    `json:"warnings"`
+	// TreeAgeSeconds is how long ago the working tree was last fetched from its
+	// remote, and is null when the tree carries no FETCH_HEAD to measure. It is
+	// separate from IndexAgeSeconds because the two fail independently: the index
+	// can stop being confirmed on a live tree, and a tree can freeze under a
+	// healthy loop. A caller gating on Ready does not need to read it, but an
+	// operator diagnosing a red pod does: it says which half went stale.
+	TreeAgeSeconds *int64 `json:"tree_age_seconds"`
+	Head           string `json:"head"`
+	Warnings       int    `json:"warnings"`
 }
