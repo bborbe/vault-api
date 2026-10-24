@@ -56,6 +56,12 @@ type application struct {
 	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                               display:"length"`
 	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                 default:"http://vault-obsidian-personal:9090"`
 	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                  default:"30s"`
+	// StaleAfter bounds both freshness signals /readiness reports on: the index's
+	// own verification and the working tree's last fetch from its remote. It is
+	// ten times the 30s refresh interval, so it tolerates ten missed ticks before
+	// the pod stops reporting ready. Zero disables the rule, which is what a local
+	// run against a tree nothing fetches wants.
+	StaleAfter libtime.Duration `required:"false" arg:"stale-after"      env:"STALE_AFTER"      usage:"how long the index or the tree may go unrefreshed before /readiness answers 503. 0 disables."                                        default:"5m"`
 	// KafkaBrokers enables the change-event producer. Empty disables it, which is
 	// what a local run wants: without a producer the service still serves reads and
 	// writes, it just publishes nothing.
@@ -86,10 +92,11 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	store := vaultapi.NewCountingPageStorage(storage.NewPageStorage(storageConfig), metrics)
 
 	index := vaultapi.NewIndex(vaultapi.Config{
-		VaultPath: a.VaultPath,
-		VaultName: a.VaultName,
-		TasksDir:  a.TasksDir,
-		GoalsDir:  a.GoalsDir,
+		VaultPath:  a.VaultPath,
+		VaultName:  a.VaultName,
+		TasksDir:   a.TasksDir,
+		GoalsDir:   a.GoalsDir,
+		StaleAfter: a.StaleAfter.Duration(),
 	}, metrics)
 	if err := index.Build(ctx, store); err != nil {
 		glog.Warningf("initial index build failed: %v", err)
@@ -214,7 +221,9 @@ func (a *application) emitterFactory(
 
 // refresh rebuilds the index when the working tree's HEAD changes, or while the
 // first successful build has not happened yet. A steady HEAD means no file is
-// read, so the file-read counter stays flat between pulls.
+// read, so the file-read counter stays flat between pulls; the tick still
+// records a verification, which is what lets /readiness tell a running loop from
+// a stopped one.
 //
 // After rebuilding it hands the new HEAD to the feed, which publishes one change
 // event per task file that differs from the last published commit. That is what
@@ -233,11 +242,15 @@ func (a *application) refresh(
 				return nil
 			case <-ticker.C:
 				current := vaultapi.ResolveHead(a.VaultPath)
-				ready := index.Readiness().Ready
-				if !ready || index.Head() != current {
+				// Built(), not Readiness().Ready: Ready also fails on a stale tree,
+				// and rebuilding every tick for a tree that has not moved would spend
+				// the file reads the HEAD check exists to avoid.
+				if !index.Built() || index.Head() != current {
 					if err := index.Build(ctx, store); err != nil {
 						glog.Warningf("index rebuild failed: %v", err)
 					}
+				} else {
+					index.Verify()
 				}
 				// Publish after the rebuild, never before it. Building the producer
 				// blocks on an unreachable broker (sarama dials and retries), so
