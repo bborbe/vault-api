@@ -63,7 +63,12 @@ func NewFeedWithBaseline(
 	isPermanent func(err error) bool,
 	baseline string,
 ) Feed {
-	return &feed{factory: factory, isPermanent: isPermanent, baseline: baseline}
+	return &feed{
+		factory:     factory,
+		isPermanent: isPermanent,
+		baseline:    baseline,
+		persisted:   baseline,
+	}
 }
 
 type feed struct {
@@ -109,7 +114,8 @@ func (f *feed) Advance(ctx context.Context, head string) string {
 	if emitter == nil {
 		return f.persisted
 	}
-	if err := emitter.Emit(ctx, f.baseline, head); err != nil {
+	from := f.baseline
+	if err := emitter.Emit(ctx, from, head); err != nil {
 		// Key the budget on the baseline, not on the range: head moves with every
 		// commit, so a range key would reset the counter on an actively edited
 		// vault and the cap would never fire.
@@ -141,7 +147,14 @@ func (f *feed) Advance(ctx context.Context, head string) string {
 	}
 	f.succeeded()
 	f.baseline = head
-	f.persisted = head
+	// Persist head only when this publish closed the whole persisted range. If it
+	// started past the persisted baseline, a range between them was abandoned and
+	// still unpublished — advancing here would drop it after all, which is the
+	// defect this split exists to prevent. The persisted baseline then stays put
+	// until a run publishes that gap (a reload from it does exactly that).
+	if from == f.persisted {
+		f.persisted = head
+	}
 	return f.persisted
 }
 

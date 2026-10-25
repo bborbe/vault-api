@@ -153,9 +153,11 @@ var _ = Describe("Feed", func() {
 
 		// Later changes still publish, and they publish from the abandoned head
 		// rather than from the retained baseline — otherwise the poison range would
-		// be retried forever and the stream would never advance again.
+		// be retried forever and the stream would never advance again. The persisted
+		// baseline stays put: publishing a later range does not close the gap, and
+		// advancing past it here would drop the abandoned range after all.
 		emitter.err = nil
-		Expect(feed.Advance(ctx, "eeeeeee5")).To(Equal("eeeeeee5"))
+		Expect(feed.Advance(ctx, "eeeeeee5")).To(Equal("aaaaaaa1"))
 		Expect(emitter.oldHeads).To(Equal(
 			[]string{"aaaaaaa1", "aaaaaaa1", "aaaaaaa1", "ddddddd4"},
 		))
@@ -186,6 +188,32 @@ var _ = Describe("Feed", func() {
 		Expect(replay.Advance(ctx, "ddddddd4")).To(Equal("ddddddd4"))
 		Expect(reloaded.oldHeads).To(Equal([]string{"aaaaaaa1"}))
 		Expect(reloaded.newHeads).To(Equal([]string{"ddddddd4"}))
+	})
+
+	It("advances the persisted baseline once the gap itself published", func() {
+		// The counterpart to the retention spec: the persisted baseline is stuck
+		// before an abandoned range only while that range is unpublished. A run that
+		// publishes it closes the gap and persists head again, so a permanent stop
+		// would be a different bug from the one being fixed.
+		poison := &fakeEmitter{err: errors.New("message too large")}
+		feed := newFeed(poison, nil)
+		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("aaaaaaa1"))
+
+		// The poison is gone; a feed starting from the persisted baseline publishes
+		// the whole gap and moves the baseline past it.
+		healthy := &fakeEmitter{}
+		replay := vaultapi.NewFeedWithBaseline(
+			func(_ context.Context) (vaultapi.Emitter, func() error, error) {
+				return healthy, func() error { return nil }, nil
+			},
+			nil,
+			"aaaaaaa1",
+		)
+		Expect(replay.Advance(ctx, "eeeeeee5")).To(Equal("eeeeeee5"))
+		Expect(healthy.oldHeads).To(Equal([]string{"aaaaaaa1"}))
 	})
 
 	It("retains the abandoned range in the persisted baseline", func() {
