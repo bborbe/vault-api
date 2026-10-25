@@ -163,7 +163,7 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 
 	// Published after the swap so a scrape never sees the new counts against
 	// the old index.
-	i.metrics.SetOpenTasks(openTasksByStageTypeAndPhase(tasks))
+	i.metrics.SetOpenTasks(openTasksByState(tasks))
 	return nil
 }
 
@@ -197,18 +197,35 @@ func (i *Index) Built() bool {
 	return i.built
 }
 
-// openTasksByStageTypeAndPhase counts the indexed tasks whose status is neither
-// completed nor aborted, per frontmatter stage, task_type and phase. A task with
-// no stage, no task_type or no phase counts under the matching unknown bucket,
-// and one with no status counts as open — an unparseable status is what excludes
-// a page, not a missing one (see buildTasks).
-func openTasksByStageTypeAndPhase(tasks []TaskItem) map[OpenTaskKey]int {
+// openTaskJobStateOf reports whether a task carries a claimed job. The test is
+// frontmatter presence alone: vault-api never polls the executor, so a job that
+// died leaves its id behind and reads running until the next dispatch overwrites
+// it. That is the same reading the board's "is anyone working this" question uses.
+func openTaskJobStateOf(task TaskItem) string {
+	if task.CurrentJob == "" {
+		return JobNone
+	}
+	return JobRunning
+}
+
+// openTasksByState counts the indexed tasks whose status is neither completed nor
+// aborted, per frontmatter stage, task_type, phase, job presence and PR state. A
+// task with no stage, no task_type or no phase counts under the matching unknown
+// bucket, and one with no status counts as open — an unparseable status is what
+// excludes a page, not a missing one (see buildTasks).
+func openTasksByState(tasks []TaskItem) map[OpenTaskKey]int {
 	counts := make(map[OpenTaskKey]int, len(tasks))
 	for _, task := range tasks {
 		if task.Status == "completed" || task.Status == "aborted" {
 			continue
 		}
-		key := OpenTaskKey{Stage: task.Stage, TaskType: task.TaskType, Phase: task.Phase}
+		key := OpenTaskKey{
+			Stage:    task.Stage,
+			TaskType: task.TaskType,
+			Phase:    task.Phase,
+			JobState: openTaskJobStateOf(task),
+			PRState:  task.PRState,
+		}
 		if key.Stage == "" {
 			key.Stage = StageUnknown
 		}
@@ -217,6 +234,9 @@ func openTasksByStageTypeAndPhase(tasks []TaskItem) map[OpenTaskKey]int {
 		}
 		if key.Phase == "" {
 			key.Phase = PhaseUnknown
+		}
+		if key.PRState == "" {
+			key.PRState = PRStateUnknown
 		}
 		counts[key]++
 	}
@@ -333,6 +353,11 @@ func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
 		Flag:      task.Flag(),
 		Vault:     i.cfg.VaultName,
 		UpdatedAt: page.ModifiedDate,
+		// Raw frontmatter, uncoerced: the gauge maps an empty value onto its
+		// sentinel (JobNone / PRStateUnknown), so the two readings stay distinct
+		// here and one mapping site owns the coercion.
+		CurrentJob: task.GetString("current_job"),
+		PRState:    task.GetString("pr_state"),
 	}, "", true
 }
 
