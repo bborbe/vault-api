@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.16.0
 
 - feat: Let `GET /api/v1/tasks` take more than one `task_type`, so a caller whose population spans several types asks once instead of issuing a query per type. `?task_type=a&task_type=b` and `?task_type=a,b` are both accepted, and the values are a **union**: a task matches when its type is any one of them, while every other filter still narrows by intersection. This is what a dedup check needs — `sentry-collector-agent` lists tracked tasks to decide what to create, and its pages carry three different `task_type` values, so a single-value filter returns 1,726 of 1,898 and the missing 172 would be re-created as duplicate tasks on every run. A subset filter there is worse than no filter, because the caller's own guard only catches "matched nothing" and 1,726 is neither empty nor correct. A single value is the one-element case and is unchanged.
 
