@@ -39,6 +39,7 @@ func NewHandler(
 	index *vaultapi.Index,
 	gatewaySecret string,
 	vaultPath string,
+	tasksDir string,
 	vaultName string,
 	writer gitrest.Client,
 	clock libtime.CurrentDateTime,
@@ -48,6 +49,7 @@ func NewHandler(
 	deps := writeDeps{
 		index:         index,
 		vaultPath:     vaultPath,
+		tasksDir:      tasksDir,
 		vault:         vaultName,
 		writer:        writer,
 		clock:         clock,
@@ -67,8 +69,13 @@ func NewHandler(
 	if gatewaySecret != "" {
 		api.Use(gatewaySecretMiddleware(gatewaySecret))
 	}
-	api.Path("/tasks").HandlerFunc(handleListTasks(index))
-	api.Path("/tasks/{id}").HandlerFunc(handleGetTask(index))
+	api.Path("/tasks").Methods(http.MethodGet).HandlerFunc(handleListTasks(index))
+	api.Path("/tasks").Methods(http.MethodPost).HandlerFunc(handleCreateTask(deps))
+	api.Path("/tasks/{id}").Methods(http.MethodGet).HandlerFunc(handleGetTaskDocument(deps))
+	api.Path("/tasks/{id}").Methods(http.MethodPatch).HandlerFunc(handlePatchTask(deps))
+	api.Path("/tasks/{id}/content").
+		Methods(http.MethodPut).
+		HandlerFunc(handlePutTaskContent(deps))
 	api.Path("/tasks/{id}/phase").
 		Methods(http.MethodPatch).
 		HandlerFunc(handlePatchPhase(deps))
@@ -138,26 +145,6 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			Warnings:        warnings,
 			IndexAgeSeconds: age,
 		})
-	}
-}
-
-func handleGetTask(index *vaultapi.Index) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := mux.Vars(r)["id"]
-		item, found, invalid := index.GetTask(id)
-		if found {
-			writeJSON(w, http.StatusOK, item)
-			return
-		}
-		if invalid != "" {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
-				"error":  "invalid_frontmatter",
-				"reason": invalid,
-				"path":   id,
-			})
-			return
-		}
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 	}
 }
 

@@ -137,7 +137,16 @@ var _ = Describe("Write endpoints", func() {
 		))
 
 		router = handler.NewHandler(
-			ctx, index, secret, vaultPath, "test", writer, clock, published, &fakeRefClient{},
+			ctx,
+			index,
+			secret,
+			vaultPath,
+			"25 Tasks",
+			"test",
+			writer,
+			clock,
+			published,
+			&fakeRefClient{},
 		)
 	})
 
@@ -477,7 +486,16 @@ var _ = Describe("Write endpoints", func() {
 			zero := libtime.NewCurrentDateTime()
 			zero.SetNow(libtime.DateTime{})
 			zeroClock := handler.NewHandler(
-				ctx, index, secret, vaultPath, "test", writer, zero, published, &fakeRefClient{},
+				ctx,
+				index,
+				secret,
+				vaultPath,
+				"25 Tasks",
+				"test",
+				writer,
+				zero,
+				published,
+				&fakeRefClient{},
 			)
 			request := httptest.NewRequest(
 				http.MethodPost,

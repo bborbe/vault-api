@@ -43,6 +43,7 @@ const publishTimeout = 5 * time.Second
 type writeDeps struct {
 	index         *vaultapi.Index
 	vaultPath     string
+	tasksDir      string
 	vault         string
 	writer        gitrest.Client
 	clock         libtime.CurrentDateTime
@@ -284,6 +285,21 @@ func (d document) write(
 	deps writeDeps,
 	status, phase string,
 ) {
+	if !d.persist(ctx, w, deps) {
+		return
+	}
+	writeJSON(w, http.StatusOK, writeResponse{
+		ID:     d.item.ID,
+		Path:   d.item.Path,
+		Status: status,
+		Phase:  phase,
+	})
+}
+
+// persist renders the changed keys into the original bytes, hands the file to
+// git-rest and publishes the change event. It answers its own failures and
+// reports whether the caller should go on to write a response.
+func (d document) persist(ctx context.Context, w http.ResponseWriter, deps writeDeps) bool {
 	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(d.raw))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -291,7 +307,7 @@ func (d document) write(
 			"reason": err.Error(),
 			"path":   d.item.Path,
 		})
-		return
+		return false
 	}
 	if err := deps.writer.WriteFile(ctx, d.item.Path, []byte(rendered)); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{
@@ -299,7 +315,7 @@ func (d document) write(
 			"reason": err.Error(),
 			"path":   d.item.Path,
 		})
-		return
+		return false
 	}
 	// The file has landed in git, so the response is already decided: a publish
 	// failure must not turn a write that happened into an error the client retries,
@@ -333,12 +349,7 @@ func (d document) write(
 			)
 		}
 	}
-	writeJSON(w, http.StatusOK, writeResponse{
-		ID:     d.item.ID,
-		Path:   d.item.Path,
-		Status: status,
-		Phase:  phase,
-	})
+	return true
 }
 
 // task renders the document as a change-event payload. The identifier is the
