@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bborbe/errors"
+	"github.com/golang/glog"
 )
 
 // BaselineStore persists the last commit whose changes were published, so a
@@ -41,6 +42,41 @@ type noopBaselineStore struct{}
 func (noopBaselineStore) Load(context.Context) (string, error) { return "", nil }
 
 func (noopBaselineStore) Save(context.Context, string) error { return nil }
+
+// ResolveBaseline returns baseline when the repository still holds that commit,
+// and "" otherwise.
+//
+// A persisted baseline can outlive the commit it names — a re-cloned volume, a
+// force-push, a gc — and the feed cannot diff a commit that is gone: the error is
+// not a broker error, so it is classified as transient and retried forever, and
+// publishing stops permanently. Adopting HEAD is what every instance did before
+// the file existed, so falling back to it degrades rather than breaks.
+//
+// A repository that cannot be read at all also yields "", with a distinct
+// warning: the alternative is failing startup and taking the read API down over a
+// baseline, and the two causes must stay distinguishable in the log.
+func ResolveBaseline(ctx context.Context, differ Differ, baseline string) string {
+	if baseline == "" {
+		return ""
+	}
+	exists, err := differ.Exists(ctx, baseline)
+	if err != nil {
+		glog.Warningf(
+			"verify event baseline %s failed, adopting current HEAD: %v",
+			baseline,
+			err,
+		)
+		return ""
+	}
+	if !exists {
+		glog.Warningf(
+			"event baseline %s is not in this repository, adopting current HEAD",
+			baseline,
+		)
+		return ""
+	}
+	return baseline
+}
 
 // NewFileBaselineStore persists the baseline in a file at path.
 //

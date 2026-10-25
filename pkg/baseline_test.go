@@ -6,6 +6,7 @@ package vaultapi_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -90,5 +91,59 @@ var _ = Describe("BaselineStore", func() {
 			Expect(err).To(BeNil())
 			Expect(baseline).To(BeEmpty())
 		})
+	})
+})
+
+// resolvingDiffer is a Differ whose Exists answer the test controls; Diff and
+// ReadAt are unused by ResolveBaseline.
+type resolvingDiffer struct {
+	exists bool
+	err    error
+	calls  int
+}
+
+func (d *resolvingDiffer) Diff(context.Context, string, string) ([]vaultapi.Change, error) {
+	return nil, nil
+}
+
+func (d *resolvingDiffer) ReadAt(context.Context, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (d *resolvingDiffer) Exists(context.Context, string) (bool, error) {
+	d.calls++
+	return d.exists, d.err
+}
+
+var _ = Describe("ResolveBaseline", func() {
+	ctx := context.Background()
+
+	It("keeps a baseline the repository still holds", func() {
+		differ := &resolvingDiffer{exists: true}
+
+		Expect(vaultapi.ResolveBaseline(ctx, differ, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(differ.calls).To(Equal(1))
+	})
+
+	It("drops a baseline naming a commit the repository lost", func() {
+		// The wedge case: the stored SHA is gone, so diff-tree fails in a way the
+		// feed treats as transient and retries forever. Adopting HEAD is the
+		// pre-existing behaviour, and it is what keeps publishing alive.
+		differ := &resolvingDiffer{exists: false}
+
+		Expect(vaultapi.ResolveBaseline(ctx, differ, "aaaaaaa1")).To(BeEmpty())
+	})
+
+	It("drops a baseline it cannot verify, without failing startup", func() {
+		differ := &resolvingDiffer{err: errors.New("repository unreadable")}
+
+		Expect(vaultapi.ResolveBaseline(ctx, differ, "aaaaaaa1")).To(BeEmpty())
+	})
+
+	It("returns an empty baseline without consulting the repository", func() {
+		differ := &resolvingDiffer{exists: true}
+
+		Expect(vaultapi.ResolveBaseline(ctx, differ, "")).To(BeEmpty())
+		Expect(differ.calls).To(Equal(0))
 	})
 })
