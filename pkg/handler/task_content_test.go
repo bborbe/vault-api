@@ -127,6 +127,33 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(frontmatter["priority"]).To(BeNumerically("==", 2))
 		})
 
+		It("keeps a frontmatter block scalar that contains a delimiter line", func() {
+			// YAML allows a block scalar whose lines begin with dashes. Splitting on
+			// the first "\n---" would cut the real frontmatter in half and move the
+			// rest into the body, so the closing delimiter is matched as a whole line.
+			Expect(os.WriteFile(
+				filepath.Join(tasksDir, "Alpha.md"),
+				[]byte("---\ntask_identifier: task-1\nstatus: in_progress\n"+
+					"description: |\n  line one\n  ---\n  line two\n---\n"+contentBody),
+				0o600,
+			)).To(Succeed())
+			Expect(index.Build(ctx, store())).To(Succeed())
+
+			recorder := call(http.MethodGet, "/api/v1/tasks/task-1", "")
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["body"]).To(Equal(contentBody))
+
+			// The same file must survive a body replacement with its block scalar intact.
+			replaced := call(
+				http.MethodPut, "/api/v1/tasks/task-1/content", `{"body":"new body\n"}`,
+			)
+			Expect(replaced.Code).To(Equal(http.StatusOK))
+			written := writer.calls[0].content
+			Expect(written).To(ContainSubstring("line one"))
+			Expect(written).To(ContainSubstring("line two"))
+			Expect(written).To(ContainSubstring("task_identifier: task-1"))
+		})
+
 		It("answers 404 for an identifier no task answers to", func() {
 			recorder := call(http.MethodGet, "/api/v1/tasks/nope", "")
 			Expect(recorder.Code).To(Equal(http.StatusNotFound))
@@ -199,6 +226,18 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(written).NotTo(ContainSubstring("written by the API"))
 		})
 
+		It("refuses a request that omits body rather than blanking the content", func() {
+			// With a plain string field a caller who sent the wrong field name would
+			// decode to an empty body and wipe the task's content.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPut, "/api/v1/tasks/task-1/content", `{"frontmatter":{}}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_body"))
+			Expect(writer.calls).To(BeEmpty(), "a body-less request must not write")
+		})
+
 		It("answers the replaced page", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(
@@ -250,6 +289,16 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(decode(recorder)["filter"]).To(Equal("glob"))
 		})
 
+		It("refuses a declared filter sent with no value", func() {
+			// query.Get cannot tell `?task_type=` from an absent parameter, so
+			// treating an empty value as unset returns the whole vault to a caller
+			// who meant to narrow it.
+			recorder := call(http.MethodGet, "/api/v1/tasks?task_type=", "")
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_filter"))
+			Expect(decode(recorder)["filter"]).To(Equal("task_type"))
+		})
+
 		It("refuses an unparseable updated_since rather than dropping it", func() {
 			recorder := call(http.MethodGet, "/api/v1/tasks?updated_since=yesterday", "")
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
@@ -283,6 +332,42 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(recorder.Code).To(Equal(http.StatusConflict))
 			Expect(decode(recorder)["error"]).To(Equal("task_exists"))
 			Expect(writer.calls).To(BeEmpty())
+		})
+
+		It("refuses the fields PATCH refuses, so create is not a way around it", func() {
+			Expect(index.Build(ctx, store())).To(Succeed())
+			for _, body := range []string{
+				`{"title":"Bravo","frontmatter":{"approved_by":"someone"}}`,
+				`{"title":"Bravo","frontmatter":{"secret_sauce":"x"}}`,
+			} {
+				recorder := call(http.MethodPost, "/api/v1/tasks", body)
+				Expect(recorder.Code).To(Equal(http.StatusBadRequest), body)
+				Expect(writer.calls).To(BeEmpty(), "a refused create must not write")
+			}
+		})
+
+		It("refuses an unknown status rather than creating an invisible task", func() {
+			// A task whose status does not parse is excluded from the index, so it
+			// would answer 201 and then never appear in any listing.
+			Expect(index.Build(ctx, store())).To(Succeed())
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks",
+				`{"title":"Bravo","frontmatter":{"status":"nonsense"}}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusUnprocessableEntity))
+			Expect(decode(recorder)["error"]).To(Equal("unknown_status"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
+		It("refuses a task_identifier another task already answers to", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks",
+				`{"title":"Bravo","frontmatter":{"task_identifier":"task-1"}}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			Expect(decode(recorder)["error"]).To(Equal("task_exists"))
+			Expect(writer.calls).To(BeEmpty(), "a colliding identifier must not overwrite")
 		})
 
 		It("answers 400 for a title that cannot be a filename", func() {

@@ -33,8 +33,12 @@ type TaskDocument struct {
 // contentRequest is the body of PUT /api/v1/tasks/{id}/content. It carries the
 // markdown body only: the caller names a task, never a path, and the frontmatter
 // is not its to replace through this route.
+// Body is a pointer so a request that omits it is refused. With a plain string a
+// caller that sent the wrong field name — `frontmatter`, say — would decode to an
+// empty body and blank the task's content, which is the one destructive outcome
+// this route can have.
 type contentRequest struct {
-	Body string `json:"body"`
+	Body *string `json:"body"`
 }
 
 // createRequest is the body of POST /api/v1/tasks. The caller supplies the
@@ -122,15 +126,22 @@ func handlePatchTask(deps writeDeps) http.HandlerFunc {
 	}
 }
 
-// patchFieldRefusal answers the request itself when a named field may not be
-// written through PATCH, and returns "" when every field is allowed.
-func patchFieldRefusal(w http.ResponseWriter, request map[string]any, path string) string {
-	for key := range request {
+// fieldRefusal answers the request itself when a named field may not be written
+// through this route, and returns "" when every field is allowed. Both write
+// routes go through it, so a key one of them refuses cannot be written through
+// the other — the asymmetry that made a create a way around the PATCH allowlist.
+func fieldRefusal(
+	w http.ResponseWriter,
+	fields map[string]any,
+	allowed map[string]bool,
+	path string,
+) string {
+	for key := range fields {
 		if key == "approved_by" || key == "approved_at" {
 			writeRefusalError(w, rules.RefuseApprovalRecordWrite(), path)
 			return "approval"
 		}
-		if !typedTaskFields[key] {
+		if !allowed[key] {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "unknown_field",
 				"field": key,
@@ -140,6 +151,48 @@ func patchFieldRefusal(w http.ResponseWriter, request map[string]any, path strin
 		}
 	}
 	return ""
+}
+
+// patchFieldRefusal answers the request itself when a named field may not be
+// written through PATCH, and returns "" when every field is allowed.
+func patchFieldRefusal(w http.ResponseWriter, request map[string]any, path string) string {
+	return fieldRefusal(w, request, typedTaskFields, path)
+}
+
+// createFields is the PATCH allowlist plus task_identifier, which only a create
+// may name: a PATCH that changed it would break the addressing the API rests on.
+var createFields = func() map[string]bool {
+	fields := make(map[string]bool, len(typedTaskFields)+1)
+	for key := range typedTaskFields {
+		fields[key] = true
+	}
+	fields["task_identifier"] = true
+	return fields
+}()
+
+// createValues normalises the status and phase a create carries. It deliberately
+// does NOT run the transition graph — a create is not a transition — but it does
+// refuse an unknown value, because the index excludes a task whose status or
+// phase does not parse: such a task answers 201 and then never appears in any
+// listing, which is the silent-wrongness this surface exists to remove.
+func createValues(w http.ResponseWriter, fields map[string]any, path string) bool {
+	if raw, present := fields["status"]; present {
+		target, ok := domain.NormalizeTaskStatus(fmt.Sprint(raw))
+		if !ok {
+			writeRefusalError(w, rules.UnknownStatus(fmt.Sprint(raw)), path)
+			return false
+		}
+		fields["status"] = string(target)
+	}
+	if raw, present := fields["phase"]; present {
+		target, ok := domain.NormalizeTaskPhase(fmt.Sprint(raw))
+		if !ok {
+			writeRefusalError(w, rules.UnknownPhase(fmt.Sprint(raw)), path)
+			return false
+		}
+		fields["phase"] = string(target)
+	}
+	return true
 }
 
 // patchTransitions validates the status and phase a PATCH carries against the
@@ -185,11 +238,18 @@ func handlePutTaskContent(deps writeDeps) http.HandlerFunc {
 		if !decodeBody(w, r, &request) {
 			return
 		}
+		if request.Body == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "invalid_body",
+				"reason": "body is required; send {\"body\": \"...\"} to replace the content",
+			})
+			return
+		}
 		document, ok := loadDocument(ctx, w, deps, mux.Vars(r)["id"])
 		if !ok {
 			return
 		}
-		replaced := replaceBody(string(document.raw), request.Body)
+		replaced := replaceBody(string(document.raw), *request.Body)
 		if err := deps.writer.WriteFile(ctx, document.item.Path, []byte(replaced)); err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{
 				"error":  "git_rest_failed",
@@ -207,18 +267,14 @@ func handlePutTaskContent(deps writeDeps) http.HandlerFunc {
 // A file with no parseable frontmatter is replaced wholesale, because there is
 // no block to preserve and guessing one would invent a document.
 func replaceBody(raw, body string) string {
-	rest, found := strings.CutPrefix(raw, "---")
-	if !found {
-		return body
-	}
-	end := strings.Index(rest, "\n---")
+	end := frontmatterEnd(raw)
 	if end < 0 {
 		return body
 	}
-	// One newline, not two: taskBody strips exactly one after the closing
-	// delimiter, so a second would come back as a leading blank line in every
-	// subsequent read of this task.
-	return "---" + rest[:end+len("\n---")] + "\n" + body
+	// raw[:end] ends with the closing delimiter and its newline, so the body
+	// follows directly: taskBody strips exactly one newline there, and adding a
+	// second would come back as a leading blank line on every later read.
+	return raw[:end] + body
 }
 
 // handleCreateTask serves POST /api/v1/tasks. The caller names the task and the
@@ -249,15 +305,9 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			})
 			return
 		}
-		frontmatter := request.Frontmatter
-		if frontmatter == nil {
-			frontmatter = map[string]any{}
-		}
-		// A task without an identifier is addressable only by its filename, which
-		// changes the moment someone renames the page. The server mints one so the
-		// created task is addressable by identifier from the first request.
-		if _, present := frontmatter["task_identifier"]; !present {
-			frontmatter["task_identifier"] = uuid.NewString()
+		frontmatter, ok := prepareCreateFrontmatter(w, deps, request.Frontmatter, path)
+		if !ok {
+			return
 		}
 		head, err := storage.SerializeFrontmatter(ctx, frontmatter, "")
 		if err != nil {
@@ -283,6 +333,46 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			Body:        request.Body,
 		})
 	}
+}
+
+// prepareCreateFrontmatter validates the caller's frontmatter and returns it
+// ready to serialise, answering the request itself when any of it is refused.
+func prepareCreateFrontmatter(
+	w http.ResponseWriter,
+	deps writeDeps,
+	fields map[string]any,
+	path string,
+) (map[string]any, bool) {
+	frontmatter := fields
+	if frontmatter == nil {
+		frontmatter = map[string]any{}
+	}
+	if code := fieldRefusal(w, frontmatter, createFields, path); code != "" {
+		return nil, false
+	}
+	if !createValues(w, frontmatter, path) {
+		return nil, false
+	}
+	// A caller-supplied identifier is accepted only when nothing answers to it. Two
+	// pages sharing one identifier make one of them unaddressable: the index
+	// resolves whichever it saw last, so the other silently disappears.
+	if supplied, present := frontmatter["task_identifier"]; present {
+		identifier := fmt.Sprint(supplied)
+		if _, found, _ := deps.index.GetTask(identifier); found {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "task_exists",
+				"id":    identifier,
+				"path":  path,
+			})
+			return nil, false
+		}
+		return frontmatter, true
+	}
+	// A task without an identifier is addressable only by its filename, which
+	// changes the moment someone renames the page. The server mints one so the
+	// created task is addressable by identifier from the first request.
+	frontmatter["task_identifier"] = uuid.NewString()
+	return frontmatter, true
 }
 
 // validTaskTitle reports whether a title can be a vault filename. The vault uses

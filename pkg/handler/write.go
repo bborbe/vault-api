@@ -368,21 +368,40 @@ func (d document) task(vault string) lib.Task {
 	}
 }
 
+// frontmatterEnd returns the offset just past the frontmatter block's closing
+// delimiter, or -1 when the content carries no parseable block.
+//
+// The delimiter is a line that is exactly "---". Matching a bare "\n---" prefix
+// instead would also match a block scalar whose first line begins with dashes —
+// YAML permits one — and then cut the real frontmatter in half, moving the rest
+// of it into the body. That is the one way the read and the body write can
+// silently corrupt a task.
+func frontmatterEnd(raw string) int {
+	lines := strings.SplitAfter(raw, "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], "\r\n") != "---" {
+		return -1
+	}
+	offset := len(lines[0])
+	for _, line := range lines[1:] {
+		offset += len(line)
+		if strings.TrimRight(line, "\r\n") == "---" {
+			return offset
+		}
+	}
+	return -1
+}
+
 // taskBody returns the markdown body after the frontmatter's closing delimiter.
 // A write re-renders only the frontmatter, so the body is taken from the bytes on
 // disk rather than from the rendered string.
 func taskBody(raw string) string {
-	rest, found := strings.CutPrefix(raw, "---")
-	if !found {
-		return ""
-	}
-	end := strings.Index(rest, "\n---")
+	end := frontmatterEnd(raw)
 	if end < 0 {
 		return ""
 	}
 	// Both line endings, because a vault checked out on a machine with autocrlf can
 	// carry CRLF and the event body must not start with a stray \r.
-	return strings.TrimPrefix(strings.TrimPrefix(rest[end+len("---")+1:], "\r"), "\n")
+	return strings.TrimPrefix(strings.TrimPrefix(raw[end:], "\r"), "\n")
 }
 
 // decodeBody reads a JSON body capped at the write endpoints' limit, answering

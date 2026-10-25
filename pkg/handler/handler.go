@@ -159,6 +159,18 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 				})
 				return
 			}
+			// A declared filter sent with an empty value is refused too. query.Get
+			// cannot tell `?task_type=` from an absent parameter, so treating it as
+			// unset would return the whole vault for a caller who meant to narrow it
+			// — the same silent widening the unknown_filter branch prevents.
+			if query.Get(name) == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":  "invalid_filter",
+					"filter": name,
+					"reason": "a filter must carry a value; omit the parameter to leave it unset",
+				})
+				return
+			}
 		}
 		updatedSince, ok := parseUpdatedSince(w, query.Get("updated_since"))
 		if !ok {
