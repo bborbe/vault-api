@@ -115,6 +115,43 @@ var _ = Describe("GitDiffer", func() {
 		Expect(changes).To(BeEmpty())
 	})
 
+	It("reports a commit that is present", func() {
+		write("25 Tasks/Probe Task.md", "---\nstatus: hold\n---\n")
+		head := commit("add probe")
+
+		exists, err := differ.Exists(ctx, head)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue())
+	})
+
+	It("reports a commit the repository does not hold", func() {
+		write("25 Tasks/Probe Task.md", "---\nstatus: hold\n---\n")
+		commit("add probe")
+
+		// A SHA that is well-formed but absent: this is the re-cloned volume, the
+		// force-push and the gc, and it is the case that would otherwise wedge
+		// publishing on a retry that can never succeed.
+		exists, err := differ.Exists(ctx, "0123456789abcdef0123456789abcdef01234567")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse())
+	})
+
+	It("reports an empty commit as absent without asking git", func() {
+		exists, err := differ.Exists(ctx, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse())
+	})
+
+	It("returns an error for an unreadable repository rather than reporting absence", func() {
+		// The distinction matters: a broken git-dir must not be silently reported as
+		// "the baseline is gone", or the caller would adopt HEAD on a repository it
+		// cannot read and hide the real fault.
+		broken := vaultapi.NewGitDiffer(filepath.Join(vaultPath, "does-not-exist"))
+		exists, err := broken.Exists(ctx, "0123456789abcdef0123456789abcdef01234567")
+		Expect(err).To(HaveOccurred())
+		Expect(exists).To(BeFalse())
+	})
+
 	It("reports a path containing a quote verbatim", func() {
 		// -z is what makes this work: without it git C-quotes the path and it would
 		// never match the tasks dir.

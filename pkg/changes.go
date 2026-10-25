@@ -6,6 +6,7 @@ package vaultapi
 
 import (
 	"context"
+	stderrors "errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,12 @@ type Differ interface {
 	Diff(ctx context.Context, oldHead string, newHead string) ([]Change, error)
 	// ReadAt returns the content of path as it existed at head.
 	ReadAt(ctx context.Context, head string, path string) ([]byte, error)
+	// Exists reports whether commit is present in the repository. A persisted
+	// baseline can name a commit the tree no longer holds — a re-cloned volume, a
+	// force-push, a gc — and Diff then fails in a way that is not a broker error,
+	// so the feed treats it as transient and retries forever. Callers use this to
+	// drop such a baseline before it can wedge publishing.
+	Exists(ctx context.Context, commit string) (bool, error)
 }
 
 // NewGitDiffer returns a Differ that runs git inside vaultPath.
@@ -101,6 +108,47 @@ func (d *gitDiffer) ReadAt(ctx context.Context, head string, path string) ([]byt
 		return nil, errors.Wrapf(ctx, err, "read %s at %s failed", path, head)
 	}
 	return []byte(out), nil
+}
+
+// Exists reports whether commit resolves to a commit object in the repository.
+//
+// rev-parse --verify --quiet answers exit status 1, and prints nothing, for an
+// object it cannot resolve — that is the commit being absent, which is a fact the
+// caller acts on rather than a failure. Any other non-zero status is a broken or
+// unreadable repository and is returned as an error, so a misconfigured git-dir is
+// never silently reported as "the baseline is gone".
+func (d *gitDiffer) Exists(ctx context.Context, commit string) (bool, error) {
+	if commit == "" {
+		return false, nil
+	}
+	// #nosec G204 -- the binary is the literal "git" and the commit is a SHA the
+	// caller read out of this same repository. No request value reaches this call.
+	cmd := exec.CommandContext(
+		ctx,
+		"git",
+		"--git-dir", filepath.Join(d.vaultPath, ".git"),
+		"--work-tree", d.vaultPath,
+		"rev-parse",
+		"--verify",
+		"--quiet",
+		commit+"^{commit}",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if stderrors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, errors.Wrapf(
+			ctx,
+			err,
+			"git rev-parse %s: %s",
+			commit,
+			strings.TrimSpace(stderr.String()),
+		)
+	}
+	return true, nil
 }
 
 func (d *gitDiffer) git(ctx context.Context, args ...string) (string, error) {

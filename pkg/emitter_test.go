@@ -42,6 +42,12 @@ func (f *fakeDiffer) ReadAt(_ context.Context, head string, path string) ([]byte
 	return f.readAtContent, f.readAtErr
 }
 
+// Exists is unused by the emitter, which is handed a baseline the caller has
+// already validated; it is here only to satisfy vaultapi.Differ.
+func (f *fakeDiffer) Exists(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+
 // fakePublisher records every publish so the specs can assert counts, which is
 // what makes a never-publishing build fail them.
 type fakePublisher struct {

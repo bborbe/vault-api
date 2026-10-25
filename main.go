@@ -138,6 +138,29 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		initialBaseline = ""
 	}
 
+	// A baseline naming a commit this repository no longer holds — a re-cloned
+	// volume, a force-push, a gc — cannot be diffed, and that failure is not a
+	// broker error, so the feed would classify it as transient and retry it
+	// forever. Drop such a baseline here, where adopting HEAD is still the safe
+	// fallback, rather than letting it wedge publishing on the first change.
+	if initialBaseline != "" {
+		exists, checkErr := vaultapi.NewGitDiffer(a.VaultPath).Exists(ctx, initialBaseline)
+		if checkErr != nil {
+			glog.Warningf(
+				"verify event baseline %s failed, adopting current HEAD: %v",
+				initialBaseline,
+				checkErr,
+			)
+			initialBaseline = ""
+		} else if !exists {
+			glog.Warningf(
+				"event baseline %s is not in this repository, adopting current HEAD",
+				initialBaseline,
+			)
+			initialBaseline = ""
+		}
+	}
+
 	// Logged on success as well as on failure: the baseline a restart resumes from
 	// is the only observable that separates a persisted baseline from a
 	// process-local one, and a pod's log is readable where its filesystem is not.
