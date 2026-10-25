@@ -129,15 +129,47 @@ func handleReadiness(index *vaultapi.Index) http.HandlerFunc {
 	}
 }
 
+// taskListFilters is every query parameter GET /api/v1/tasks serves. A parameter
+// outside this set is refused rather than ignored: the handler used to drop what
+// it did not recognise and return every task, so a caller whose filter was
+// misspelled or unsupported read the whole vault as its match set — the exact
+// silent-wrongness this surface exists to remove.
+var taskListFilters = map[string]bool{
+	"assignee":      true,
+	"status":        true,
+	"phase":         true,
+	"goal":          true,
+	"cluster":       true,
+	"task_type":     true,
+	"short_id":      true,
+	"updated_since": true,
+}
+
 func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
+		for name := range query {
+			if !taskListFilters[name] {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":  "unknown_filter",
+					"filter": name,
+				})
+				return
+			}
+		}
+		updatedSince, ok := parseUpdatedSince(w, query.Get("updated_since"))
+		if !ok {
+			return
+		}
 		items, warnings, age := index.QueryTasks(vaultapi.TaskFilter{
-			Assignee: query.Get("assignee"),
-			Status:   query.Get("status"),
-			Phase:    query.Get("phase"),
-			Goal:     query.Get("goal"),
-			Cluster:  query.Get("cluster"),
+			Assignee:     query.Get("assignee"),
+			Status:       query.Get("status"),
+			Phase:        query.Get("phase"),
+			Goal:         query.Get("goal"),
+			Cluster:      query.Get("cluster"),
+			TaskType:     query.Get("task_type"),
+			ShortID:      query.Get("short_id"),
+			UpdatedSince: updatedSince,
 		})
 		writeJSON(w, http.StatusOK, vaultapi.ListResponse[vaultapi.TaskItem]{
 			Items:           items,
@@ -146,6 +178,25 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			IndexAgeSeconds: age,
 		})
 	}
+}
+
+// parseUpdatedSince reads an RFC3339 bound for the updated_since filter. An
+// unparseable value is refused rather than dropped, because a filter that
+// silently disappears returns every task and reads as a successful query.
+func parseUpdatedSince(w http.ResponseWriter, raw string) (*time.Time, bool) {
+	if raw == "" {
+		return nil, true
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error":  "invalid_filter",
+			"filter": "updated_since",
+			"reason": "expected an RFC3339 timestamp",
+		})
+		return nil, false
+	}
+	return &parsed, true
 }
 
 func handleListGoals(index *vaultapi.Index) http.HandlerFunc {

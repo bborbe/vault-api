@@ -4,6 +4,8 @@
 
 package vaultapi
 
+import "time"
+
 // TaskItem is the typed projection of one task page. It is served by
 // GET /api/v1/tasks and GET /api/v1/tasks/{id}.
 type TaskItem struct {
@@ -13,12 +15,17 @@ type TaskItem struct {
 	Status   string   `json:"status"`
 	Phase    string   `json:"phase"`
 	TaskType string   `json:"task_type"`
+	ShortID  string   `json:"short_id,omitempty"`
 	Stage    string   `json:"stage"`
 	Assignee string   `json:"assignee"`
 	Goals    []string `json:"goals"`
 	Cluster  *string  `json:"cluster"`
 	Flag     bool     `json:"flag"`
 	Vault    string   `json:"vault"`
+	// UpdatedAt is the page's last-modified time, which is what `updated_since`
+	// filters on. It is a pointer because a page the storage layer reported no
+	// mtime for must be distinguishable from one modified at the zero instant.
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 // GoalItem is the typed projection of one goal page. It is served by

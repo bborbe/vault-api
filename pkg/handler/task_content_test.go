@@ -193,6 +193,30 @@ var _ = Describe("Task content endpoints", func() {
 		})
 	})
 
+	Describe("GET /tasks filters", func() {
+		It("refuses a filter it does not serve instead of ignoring it", func() {
+			// The collector's filename glob is the case that matters: ignoring an
+			// unknown filter returns every task, so a caller reads the whole vault
+			// as its match set and cannot tell the filter was dropped.
+			recorder := call(http.MethodGet, "/api/v1/tasks?glob=*Sentry*", "")
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("unknown_filter"))
+			Expect(decode(recorder)["filter"]).To(Equal("glob"))
+		})
+
+		It("refuses an unparseable updated_since rather than dropping it", func() {
+			recorder := call(http.MethodGet, "/api/v1/tasks?updated_since=yesterday", "")
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_filter"))
+		})
+
+		It("serves the typed filters it does declare", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\ntask_type: build-fix\n")
+			recorder := call(http.MethodGet, "/api/v1/tasks?task_type=build-fix", "")
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+		})
+	})
+
 	Describe("POST /tasks", func() {
 		It("creates the task and mints an identifier when none is given", func() {
 			Expect(index.Build(ctx, store())).To(Succeed())
