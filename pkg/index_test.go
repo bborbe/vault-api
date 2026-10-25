@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/bborbe/vault-cli/pkg/storage"
 	. "github.com/onsi/ginkgo/v2"
@@ -195,16 +196,156 @@ var _ = Describe("Index", func() {
 		writeFile(tasksDir, "Iota", taskFrontmatter("status: in_progress", "task_type: pr-review"))
 		Expect(index.Build(ctx, store)).To(Succeed())
 
-		// completed and aborted are excluded; a task with no stage, no task_type
-		// or no status line still counts as open, under the matching unknown bucket.
+		// completed and aborted are excluded; a task with no stage, no task_type,
+		// no phase or no status line still counts as open, under the matching
+		// unknown bucket. Eta carries phase: execution and no status line.
 		Expect(metrics.openTasks).To(Equal(map[vaultapi.OpenTaskKey]int{
-			{Stage: "prod", TaskType: "pr-review"}:     2, // Alpha, Beta
-			{Stage: "prod", TaskType: "unknown"}:       1, // Zeta — no task_type
-			{Stage: "dev", TaskType: "github-release"}: 1, // Epsilon
-			{Stage: "dev", TaskType: "pr-review"}:      1, // Eta — no status line
-			{Stage: "unknown", TaskType: "pr-review"}:  2, // Theta empty stage, Iota missing
+			{Stage: "prod", TaskType: "pr-review", Phase: "unknown"}:     2, // Alpha, Beta
+			{Stage: "prod", TaskType: "unknown", Phase: "unknown"}:       1, // Zeta — no task_type
+			{Stage: "dev", TaskType: "github-release", Phase: "unknown"}: 1, // Epsilon
+			{Stage: "dev", TaskType: "pr-review", Phase: "execution"}:    1, // Eta — no status line
+			{Stage: "unknown", TaskType: "pr-review", Phase: "unknown"}:  2, // Theta empty stage, Iota missing
 		}))
 		Expect(metrics.setCalls).To(Equal(1))
+	})
+})
+
+var _ = Describe("Readiness", func() {
+	var (
+		ctx       context.Context
+		vaultPath string
+		store     storage.PageStorage
+		metrics   *testMetrics
+	)
+
+	newIndex := func(staleAfter time.Duration) *vaultapi.Index {
+		return vaultapi.NewIndex(vaultapi.Config{
+			VaultPath:  vaultPath,
+			VaultName:  "test",
+			TasksDir:   "25 Tasks",
+			GoalsDir:   "24 Goals",
+			StaleAfter: staleAfter,
+		}, metrics)
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		vaultPath, err = os.MkdirTemp("", "vault-api-readiness-test")
+		Expect(err).To(BeNil())
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "24 Goals"), 0o700)).To(Succeed())
+
+		metrics = &testMetrics{reads: map[string]int64{}}
+		storageConfig := storage.DefaultConfig()
+		storageConfig.TasksDir = "25 Tasks"
+		storageConfig.GoalsDir = "24 Goals"
+		store = vaultapi.NewCountingPageStorage(
+			storage.NewPageStorage(storageConfig),
+			metrics,
+		)
+	})
+
+	AfterEach(func() {
+		Expect(os.RemoveAll(vaultPath)).To(Succeed())
+	})
+
+	It("is not ready before the first build", func() {
+		Expect(newIndex(5 * time.Minute).Readiness().Ready).To(BeFalse())
+	})
+
+	It("is ready while the tree is verified and freshly fetched", func() {
+		writeFetchHead(vaultPath, time.Now())
+		index := newIndex(5 * time.Minute)
+		Expect(index.Build(ctx, store)).To(Succeed())
+		index.Verify()
+
+		readiness := index.Readiness()
+		Expect(readiness.Ready).To(BeTrue())
+		Expect(readiness.IndexAgeSeconds).To(BeNumerically("<=", 1))
+		Expect(readiness.TreeAgeSeconds).NotTo(BeNil())
+		Expect(*readiness.TreeAgeSeconds).To(BeNumerically("<=", 1))
+	})
+
+	It("is not ready when the tree has not been fetched inside the window", func() {
+		// The index is fresh — the loop is verifying every tick — and the pod is
+		// still not ready, because the tree it indexes stopped being refreshed.
+		writeFetchHead(vaultPath, time.Now().Add(-2*time.Hour))
+		index := newIndex(5 * time.Minute)
+		Expect(index.Build(ctx, store)).To(Succeed())
+		index.Verify()
+
+		readiness := index.Readiness()
+		Expect(readiness.Ready).To(BeFalse())
+		Expect(readiness.IndexAgeSeconds).To(BeNumerically("<=", 1))
+		Expect(*readiness.TreeAgeSeconds).To(BeNumerically(">=", 7199))
+	})
+
+	It("reports a null tree age when the tree carries no fetch to measure", func() {
+		index := newIndex(5 * time.Minute)
+		Expect(index.Build(ctx, store)).To(Succeed())
+		index.Verify()
+
+		readiness := index.Readiness()
+		Expect(readiness.Ready).To(BeTrue())
+		Expect(readiness.TreeAgeSeconds).To(BeNil())
+	})
+
+	It("is not ready after a failed rebuild, and recovers on the next good one", func() {
+		writeFile(filepath.Join(vaultPath, "25 Tasks"), "Alpha", taskFrontmatter(
+			"status: in_progress",
+			"phase: execution",
+			"task_identifier: 11111111-1111-1111-1111-111111111111",
+		))
+		index := newIndex(0)
+		Expect(index.Build(ctx, store)).To(Succeed())
+		Expect(index.Readiness().Ready).To(BeTrue())
+
+		Expect(os.RemoveAll(filepath.Join(vaultPath, "25 Tasks"))).To(Succeed())
+		Expect(index.Build(ctx, store)).NotTo(Succeed())
+
+		Expect(index.Readiness().Ready).To(BeFalse())
+		Expect(index.Built()).To(BeFalse())
+		// The read path keeps serving the last good index rather than emptying.
+		items, _, _ := index.QueryTasks(vaultapi.TaskFilter{})
+		Expect(items).To(HaveLen(1))
+
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
+		Expect(index.Build(ctx, store)).To(Succeed())
+		Expect(index.Readiness().Ready).To(BeTrue())
+	})
+
+	It("leaves the staleness rule off when StaleAfter is zero", func() {
+		writeFetchHead(vaultPath, time.Now().Add(-48*time.Hour))
+		index := newIndex(0)
+		Expect(index.Build(ctx, store)).To(Succeed())
+		Expect(index.Readiness().Ready).To(BeTrue())
+	})
+})
+
+var _ = Describe("FetchAge", func() {
+	It("reports unknown when the tree carries no FETCH_HEAD", func() {
+		vaultPath, err := os.MkdirTemp("", "vault-api-fetch-age-test")
+		Expect(err).To(BeNil())
+		defer func() {
+			Expect(os.RemoveAll(vaultPath)).To(Succeed())
+		}()
+
+		_, known := vaultapi.FetchAge(vaultPath)
+		Expect(known).To(BeFalse())
+	})
+
+	It("reports the age of the last fetch", func() {
+		vaultPath, err := os.MkdirTemp("", "vault-api-fetch-age-test")
+		Expect(err).To(BeNil())
+		defer func() {
+			Expect(os.RemoveAll(vaultPath)).To(Succeed())
+		}()
+		writeFetchHead(vaultPath, time.Now().Add(-90*time.Second))
+
+		age, known := vaultapi.FetchAge(vaultPath)
+		Expect(known).To(BeTrue())
+		Expect(age).To(BeNumerically("~", 90, 5))
 	})
 })
 
@@ -233,4 +374,19 @@ func taskFrontmatter(lines ...string) string {
 
 func writeFile(dir, name, content string) {
 	Expect(os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0o600)).To(Succeed())
+}
+
+// writeFetchHead gives the test vault a fetch heartbeat at the given time, which
+// is what FetchAge measures. The content is irrelevant — only the mtime is read.
+func writeFetchHead(vaultPath string, fetchedAt time.Time) {
+	Expect(os.MkdirAll(filepath.Join(vaultPath, ".git"), 0o700)).To(Succeed())
+	path := filepath.Join(vaultPath, ".git", "FETCH_HEAD")
+	Expect(
+		os.WriteFile(
+			path,
+			[]byte("0000000000000000000000000000000000000000\t\tbranch 'main'\n"),
+			0o600,
+		),
+	).To(Succeed())
+	Expect(os.Chtimes(path, fetchedAt, fetchedAt)).To(Succeed())
 }

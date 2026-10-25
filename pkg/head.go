@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ResolveHead reads the commit the vault working tree currently points at,
@@ -83,4 +84,26 @@ func shortSHA(sha string) string {
 		return sha[:8]
 	}
 	return sha
+}
+
+// FetchAge reports how long ago the working tree was last fetched from its
+// remote, read from the modification time of .git/FETCH_HEAD. Every git fetch
+// rewrites that file, including one that brings nothing new, so its age is the
+// puller's heartbeat rather than a record of the last change: a tree that
+// nothing fetches into keeps an age that only grows.
+//
+// That is the one signal a pod has for a tree that has stopped advancing. The
+// local HEAD cannot show it — a frozen tree and a quiet one both leave the HEAD
+// unmoved — so a pod comparing HEAD to HEAD sees nothing wrong while the tree
+// falls arbitrarily far behind the remote.
+//
+// known is false when the file is absent: a tree created by git clone and never
+// fetched has no fetch to measure, and no claim about its freshness can be made
+// either way.
+func FetchAge(vaultPath string) (ageSeconds int64, known bool) {
+	info, err := os.Stat(filepath.Join(vaultPath, ".git", "FETCH_HEAD"))
+	if err != nil {
+		return 0, false
+	}
+	return int64(time.Since(info.ModTime()).Seconds()), true
 }
