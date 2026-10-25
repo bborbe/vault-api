@@ -312,7 +312,9 @@ func (a *application) refresh(
 				// The returned baseline is persisted only after a batch published, which
 				// is what makes a restart resume from the last published commit instead
 				// of adopting HEAD and skipping everything pushed while the process was
-				// down.
+				// down. It deliberately lags when a range was abandoned: persisting the
+				// skip would make it permanent, so the persisted value stays before the
+				// abandoned range and a restart re-attempts it.
 				next := feed.Advance(ctx, current)
 				persistBaseline(ctx, baselineStore, next, &savedBaseline)
 			}

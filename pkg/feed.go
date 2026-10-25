@@ -25,9 +25,15 @@ type EmitterFactory func(ctx context.Context) (Emitter, func() error, error)
 // payload over message.max.bytes — is abandoned after maxPublishRetries attempts
 // on the same baseline, because one poison event must not stop every later change
 // from publishing. Transient failures are never abandoned.
+//
+// Abandoning a range moves the publish position past it but deliberately leaves
+// the persisted baseline before it: the skipped changes are then re-attempted
+// after a restart instead of being lost for good.
 type Feed interface {
-	// Advance publishes the changes from the current baseline up to head and
-	// returns the baseline to carry forward.
+	// Advance publishes the changes from the current publish position up to head
+	// and returns the baseline a restart should resume from. That value lags the
+	// publish position by exactly the ranges that were abandoned, so a caller that
+	// persists it re-attempts them rather than skipping them.
 	Advance(ctx context.Context, head string) string
 	// Close releases the producer if it was ever built.
 	Close()
@@ -57,7 +63,12 @@ func NewFeedWithBaseline(
 	isPermanent func(err error) bool,
 	baseline string,
 ) Feed {
-	return &feed{factory: factory, isPermanent: isPermanent, baseline: baseline}
+	return &feed{
+		factory:     factory,
+		isPermanent: isPermanent,
+		baseline:    baseline,
+		persisted:   baseline,
+	}
 }
 
 type feed struct {
@@ -66,14 +77,21 @@ type feed struct {
 	close       func() error
 	isPermanent func(err error) bool
 
-	baseline string
+	// baseline is the publish position: the commit the next diff starts from.
+	// persisted is what the caller persists and a restart resumes from. They are
+	// equal except after an abandonment, where the position must move past the
+	// poison range so later changes still publish while the persisted baseline
+	// stays before it so a reload re-attempts the range.
+	baseline  string
+	persisted string
+
 	attempts int
 	failedAt string
 }
 
 func (f *feed) Advance(ctx context.Context, head string) string {
 	if head == "" {
-		return f.baseline
+		return f.persisted
 	}
 	// Adopt the first head seen rather than diffing from nothing: with no earlier
 	// commit there is nothing to publish, and starting from "" would replay the
@@ -86,29 +104,36 @@ func (f *feed) Advance(ctx context.Context, head string) string {
 	// NewFeedWithBaseline — with one, this branch is not reached at all.
 	if f.baseline == "" {
 		f.baseline = head
-		return f.baseline
+		f.persisted = head
+		return f.persisted
 	}
 	if head == f.baseline {
-		return f.baseline
+		return f.persisted
 	}
 	emitter := f.get(ctx)
 	if emitter == nil {
-		return f.baseline
+		return f.persisted
 	}
-	if err := emitter.Emit(ctx, f.baseline, head); err != nil {
+	from := f.baseline
+	if err := emitter.Emit(ctx, from, head); err != nil {
 		// Key the budget on the baseline, not on the range: head moves with every
 		// commit, so a range key would reset the counter on an actively edited
 		// vault and the cap would never fire.
 		if f.fail(err) {
+			// Abandon the range without persisting the skip. The publish position
+			// moves to head so the next change publishes, but the persisted baseline
+			// stays put: a restart then re-attempts this range instead of dropping it
+			// for good. The next Advance sees a new baseline, so the budget resets on
+			// its own — the retained range cannot re-abandon on the first new failure.
 			glog.Errorf(
-				"abandoning changes from %s after %d failed attempts; resuming at %s: %v",
+				"abandoned_range_retained range=%s..%s baseline=%s: %v",
 				f.baseline,
-				MaxPublishRetries,
 				head,
+				f.persisted,
 				err,
 			)
 			f.baseline = head
-			return f.baseline
+			return f.persisted
 		}
 		glog.Warningf(
 			"publish changes %s..%s failed (attempt %d/%d): %v",
@@ -118,11 +143,19 @@ func (f *feed) Advance(ctx context.Context, head string) string {
 			MaxPublishRetries,
 			err,
 		)
-		return f.baseline
+		return f.persisted
 	}
 	f.succeeded()
 	f.baseline = head
-	return f.baseline
+	// Persist head only when this publish closed the whole persisted range. If it
+	// started past the persisted baseline, a range between them was abandoned and
+	// still unpublished — advancing here would drop it after all, which is the
+	// defect this split exists to prevent. The persisted baseline then stays put
+	// until a run publishes that gap (a reload from it does exactly that).
+	if from == f.persisted {
+		f.persisted = head
+	}
+	return f.persisted
 }
 
 func (f *feed) get(ctx context.Context) Emitter {

@@ -147,7 +147,89 @@ var _ = Describe("Feed", func() {
 		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
 		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
 		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
-		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("ddddddd4"))
+		// Abandoned: the persisted baseline stays before the range while the
+		// publish position moves past it.
+		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("aaaaaaa1"))
+
+		// Later changes still publish, and they publish from the abandoned head
+		// rather than from the retained baseline — otherwise the poison range would
+		// be retried forever and the stream would never advance again. The persisted
+		// baseline stays put: publishing a later range does not close the gap, and
+		// advancing past it here would drop the abandoned range after all.
+		emitter.err = nil
+		Expect(feed.Advance(ctx, "eeeeeee5")).To(Equal("aaaaaaa1"))
+		Expect(emitter.oldHeads).To(Equal(
+			[]string{"aaaaaaa1", "aaaaaaa1", "aaaaaaa1", "ddddddd4"},
+		))
+	})
+
+	It("re-publishes the abandoned range after a reload", func() {
+		// The persisted baseline is what a restart resumes from. Because the
+		// abandonment left it before the range, the reloaded feed re-emits the whole
+		// range instead of starting past it — the difference between retrying a
+		// skipped range and losing it for good.
+		poison := &fakeEmitter{err: errors.New("message too large")}
+		feed := newFeed(poison, nil)
+
+		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
+		persisted := feed.Advance(ctx, "ddddddd4")
+		Expect(persisted).To(Equal("aaaaaaa1"))
+
+		reloaded := &fakeEmitter{}
+		replay := vaultapi.NewFeedWithBaseline(
+			func(_ context.Context) (vaultapi.Emitter, func() error, error) {
+				return reloaded, func() error { return nil }, nil
+			},
+			nil,
+			persisted,
+		)
+		Expect(replay.Advance(ctx, "ddddddd4")).To(Equal("ddddddd4"))
+		Expect(reloaded.oldHeads).To(Equal([]string{"aaaaaaa1"}))
+		Expect(reloaded.newHeads).To(Equal([]string{"ddddddd4"}))
+	})
+
+	It("advances the persisted baseline once the gap itself published", func() {
+		// The counterpart to the retention spec: the persisted baseline is stuck
+		// before an abandoned range only while that range is unpublished. A run that
+		// publishes it closes the gap and persists head again, so a permanent stop
+		// would be a different bug from the one being fixed.
+		poison := &fakeEmitter{err: errors.New("message too large")}
+		feed := newFeed(poison, nil)
+		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("aaaaaaa1"))
+
+		// The poison is gone; a feed starting from the persisted baseline publishes
+		// the whole gap and moves the baseline past it.
+		healthy := &fakeEmitter{}
+		replay := vaultapi.NewFeedWithBaseline(
+			func(_ context.Context) (vaultapi.Emitter, func() error, error) {
+				return healthy, func() error { return nil }, nil
+			},
+			nil,
+			"aaaaaaa1",
+		)
+		Expect(replay.Advance(ctx, "eeeeeee5")).To(Equal("eeeeeee5"))
+		Expect(healthy.oldHeads).To(Equal([]string{"aaaaaaa1"}))
+	})
+
+	It("retains the abandoned range in the persisted baseline", func() {
+		// An abandoned range must not be dropped for good. The value Advance returns
+		// is what the caller persists, and a restart resumes from it — so advancing
+		// that value to the abandoned head turns a skipped range into a permanent
+		// loss. The publish position may move past the range (later changes must
+		// still publish), but the persisted baseline stays before it and is
+		// re-attempted after a reload.
+		emitter := &fakeEmitter{err: errors.New("message too large")}
+		feed := newFeed(emitter, nil)
+
+		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("aaaaaaa1"))
 	})
 
 	It("never abandons a transient failure, however long the outage", func() {
