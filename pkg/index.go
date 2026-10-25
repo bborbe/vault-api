@@ -38,6 +38,11 @@ type TaskFilter struct {
 	Phase    string
 	Goal     string
 	Cluster  string
+	TaskType string
+	ShortID  string
+	// UpdatedSince keeps only tasks whose page was modified at or after it. It is
+	// a pointer so "no bound" and "modified at the zero instant" stay distinct.
+	UpdatedSince *time.Time
 }
 
 // Index is the in-memory view of the vault. It is rebuilt at startup and again
@@ -89,6 +94,8 @@ type taskSets struct {
 	phase    indexSet
 	cluster  indexSet
 	goal     indexSet
+	taskType indexSet
+	shortID  indexSet
 }
 
 func newTaskSets() taskSets {
@@ -98,6 +105,8 @@ func newTaskSets() taskSets {
 		phase:    indexSet{},
 		cluster:  indexSet{},
 		goal:     indexSet{},
+		taskType: indexSet{},
+		shortID:  indexSet{},
 	}
 }
 
@@ -267,6 +276,12 @@ func (i *Index) buildTasks(
 		if item.Cluster != nil {
 			sets.cluster.add(*item.Cluster, idx)
 		}
+		if item.TaskType != "" {
+			sets.taskType.add(item.TaskType, idx)
+		}
+		if item.ShortID != "" {
+			sets.shortID.add(item.ShortID, idx)
+		}
 		for _, goal := range item.Goals {
 			sets.goal.add(goalKey(goal), idx)
 		}
@@ -304,18 +319,20 @@ func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
 		goals = []string{}
 	}
 	return TaskItem{
-		ID:       id,
-		Title:    page.Name,
-		Path:     relPath(i.cfg.VaultPath, page.FilePath),
-		Status:   string(status),
-		Phase:    phase,
-		TaskType: task.GetString("task_type"),
-		Stage:    task.GetString("stage"),
-		Assignee: task.Assignee(),
-		Goals:    goals,
-		Cluster:  optionalString(task.GetString("cluster")),
-		Flag:     task.Flag(),
-		Vault:    i.cfg.VaultName,
+		ID:        id,
+		Title:     page.Name,
+		Path:      relPath(i.cfg.VaultPath, page.FilePath),
+		Status:    string(status),
+		Phase:     phase,
+		TaskType:  task.GetString("task_type"),
+		ShortID:   task.GetString("short_id"),
+		Stage:     task.GetString("stage"),
+		Assignee:  task.Assignee(),
+		Goals:     goals,
+		Cluster:   optionalString(task.GetString("cluster")),
+		Flag:      task.Flag(),
+		Vault:     i.cfg.VaultName,
+		UpdatedAt: page.ModifiedDate,
 	}, "", true
 }
 
@@ -398,7 +415,7 @@ func (i *Index) QueryTasks(filter TaskFilter) ([]TaskItem, int, int64) {
 }
 
 func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
-	sets := make([]map[int]struct{}, 0, 5)
+	sets := make([]map[int]struct{}, 0, 7)
 	if filter.Assignee != "" {
 		sets = append(sets, i.taskSets.assignee[filter.Assignee])
 	}
@@ -414,8 +431,34 @@ func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
 	if filter.Cluster != "" {
 		sets = append(sets, i.taskSets.cluster[filter.Cluster])
 	}
+	if filter.TaskType != "" {
+		sets = append(sets, i.taskSets.taskType[filter.TaskType])
+	}
+	if filter.ShortID != "" {
+		sets = append(sets, i.taskSets.shortID[filter.ShortID])
+	}
+	indexes := i.matchingIndexes(sets)
+	items := make([]TaskItem, 0, len(indexes))
+	for _, idx := range indexes {
+		if !updatedSince(i.tasks[idx], filter.UpdatedSince) {
+			continue
+		}
+		items = append(items, i.tasks[idx])
+	}
+	return items
+}
+
+// matchingIndexes returns the task indexes present in every set, or all of them
+// when no set was named. It walks the smallest set, so a narrow query costs the
+// narrow set rather than the whole vault.
+func (i *Index) matchingIndexes(sets []map[int]struct{}) []int {
 	if len(sets) == 0 {
-		return append([]TaskItem(nil), i.tasks...)
+		indexes := make([]int, 0, len(i.tasks))
+		for idx := range i.tasks {
+			indexes = append(indexes, idx)
+		}
+		sort.Ints(indexes)
+		return indexes
 	}
 
 	smallest := sets[0]
@@ -438,11 +481,18 @@ func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
 		}
 	}
 	sort.Ints(indexes)
-	items := make([]TaskItem, 0, len(indexes))
-	for _, idx := range indexes {
-		items = append(items, i.tasks[idx])
+	return indexes
+}
+
+// updatedSince reports whether an item falls inside the time bound. A task whose
+// page reported no modification time cannot be shown to be inside it, so it is
+// excluded rather than guessed at — a silently included stale task is the
+// failure a time filter exists to prevent.
+func updatedSince(item TaskItem, since *time.Time) bool {
+	if since == nil {
+		return true
 	}
-	return items
+	return item.UpdatedAt != nil && !item.UpdatedAt.Before(*since)
 }
 
 // QueryGoals returns every indexed goal, the warning count and the index age.

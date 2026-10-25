@@ -174,7 +174,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		a.refresh(index, store, feed, baselineStore),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
-			ctx, index, a.GatewaySecret, a.VaultPath, a.eventVaultName(), writer,
+			ctx, index, store, a.GatewaySecret, a.VaultPath, a.TasksDir, a.eventVaultName(), writer,
 			libtime.NewCurrentDateTime(), taskPublisher, refs,
 		)),
 	)
