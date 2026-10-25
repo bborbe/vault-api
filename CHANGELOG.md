@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.16.1
 
 - fix: Persist the change-event baseline so a restart no longer skips the commits it missed. `--event-baseline-path` / `EVENT_BASELINE_PATH` names a file that outlives the process, and the feed resumes from the last published commit instead of adopting the current HEAD. Before this the baseline was process-local, so every commit pushed while the process was down was adopted silently and never published: a task's last record stayed at the phase it held when the instance was last up, and the executor drove it at that phase indefinitely. Two paths could drop the range — the restart gap, and a range abandoned after `MaxPublishRetries` — and this change repairs both. The abandoned-range path no longer persists the skip: the publish position moves past the abandoned range so later changes still publish, while the persisted baseline stays before it, so a restart re-attempts the range instead of dropping it for good. Empty keeps the previous process-local behaviour, so the flag is opt-in per instance.
 
