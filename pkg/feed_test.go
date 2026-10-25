@@ -150,6 +150,22 @@ var _ = Describe("Feed", func() {
 		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("ddddddd4"))
 	})
 
+	It("retains the abandoned range in the persisted baseline", func() {
+		// An abandoned range must not be dropped for good. The value Advance returns
+		// is what the caller persists, and a restart resumes from it — so advancing
+		// that value to the abandoned head turns a skipped range into a permanent
+		// loss. The publish position may move past the range (later changes must
+		// still publish), but the persisted baseline stays before it and is
+		// re-attempted after a reload.
+		emitter := &fakeEmitter{err: errors.New("message too large")}
+		feed := newFeed(emitter, nil)
+
+		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("aaaaaaa1"))
+	})
+
 	It("never abandons a transient failure, however long the outage", func() {
 		emitter := &fakeEmitter{err: errors.New("dial tcp: connection refused")}
 		feed := vaultapi.NewFeed(func(_ context.Context) (vaultapi.Emitter, func() error, error) {
