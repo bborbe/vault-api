@@ -26,6 +26,19 @@ const (
 	// PhaseUnknown is the label value used for a task whose frontmatter carries no
 	// phase, for the same reason as TaskTypeUnknown.
 	PhaseUnknown = "unknown"
+	// JobRunning is the job_state value for a task carrying a non-empty
+	// current_job. It means "a job was claimed", not "the job is alive": nothing
+	// here polls the executor, so a job that died leaves its id behind and still
+	// reads running.
+	JobRunning = "running"
+	// JobNone is the job_state value for a task with no current_job. It is a value
+	// rather than an absent label because only a value is queryable: PromQL has no
+	// positive matcher for label absence.
+	JobNone = "none"
+	// PRStateUnknown is the pr_state value for a task no sweep has observed yet. It
+	// is deliberately distinct from PRStateNone (no PR at all): unknown means "ask
+	// again after the next sweep", none means "this task will never have one".
+	PRStateUnknown = "unknown"
 )
 
 // OpenTaskKey identifies one vault_api_open_tasks series. Stage is the task's own
@@ -34,10 +47,16 @@ const (
 // Phase is the task's normalized frontmatter phase: the index normalises through
 // domain.NormalizeTaskPhase before storing it, so the label never carries both
 // spellings of one phase (in_progress is reported as execution).
+//
+// JobState and PRState are the two labels the four-state split needs. JobState
+// separates a task an agent is working from one merely marked open; PRState makes
+// "the PR is already merged" provable from this metric alone.
 type OpenTaskKey struct {
 	Stage    string
 	TaskType string
 	Phase    string
+	JobState string
+	PRState  string
 }
 
 // Metrics is the instrumentation the storage decorator and the index write to.
@@ -66,12 +85,16 @@ func NewMetrics(instanceStage string, vault string) Metrics {
 		}, []string{"kind"}),
 		openTasks: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "vault_api_open_tasks",
-			Help: "Number of open tasks in the vault — status neither completed nor aborted — by the task's own frontmatter stage, by task_type and by phase. Unit: tasks.",
+			Help: "Number of open tasks in the vault — status neither completed nor aborted — by the task's own frontmatter stage, by task_type, by phase, by whether a job is claimed (job_state) and by the PR's last observed state (pr_state). Unit: tasks.",
 			ConstLabels: prometheus.Labels{
 				"instance_stage": instanceStage,
 				"vault":          vault,
 			},
-		}, []string{"stage", "task_type", "phase"}),
+			// job_state, not job: the scrape config supplies its own `job` label
+			// (kubernetes-pods), and an exporter label of the same name is renamed
+			// to exported_job by the scrape — the series would read correctly on
+			// /metrics and wrongly in Prometheus.
+		}, []string{"stage", "task_type", "phase", "job_state", "pr_state"}),
 	}
 	prometheus.MustRegister(m.fileReads, m.openTasks)
 	for _, kind := range []string{FileReadKindList, FileReadKindRead} {
@@ -92,10 +115,9 @@ func (m *metrics) AddFileReads(kind string, count int64) {
 	m.fileReads.WithLabelValues(kind).Add(float64(count))
 }
 
-// SetOpenTasks replaces the whole (stage, task_type, phase) series set. Resetting
-// first is what drops a series that no longer has open tasks — a gauge that only
-// Set() the keys it saw would leave the vanished one reporting its last value
-// forever.
+// SetOpenTasks replaces the whole series set. Resetting first is what drops a
+// series that no longer has open tasks — a gauge that only Set() the keys it saw
+// would leave the vanished one reporting its last value forever.
 func (m *metrics) SetOpenTasks(counts map[OpenTaskKey]int) {
 	m.openTasks.Reset()
 	for key, count := range counts {
@@ -103,6 +125,8 @@ func (m *metrics) SetOpenTasks(counts map[OpenTaskKey]int) {
 			openTaskStage(key),
 			openTaskType(key),
 			openTaskPhase(key),
+			openTaskJobState(key),
+			openTaskPRState(key),
 		).Set(float64(count))
 	}
 }
@@ -122,6 +146,26 @@ func openTaskType(key OpenTaskKey) string {
 		return TaskTypeUnknown
 	}
 	return key.TaskType
+}
+
+// openTaskJobState maps an absent job_state onto JobNone. Unlike the other
+// sentinels this one is not "unknown": an empty current_job is a positive reading
+// — no job is claimed — not a missing one.
+func openTaskJobState(key OpenTaskKey) string {
+	if key.JobState == "" {
+		return JobNone
+	}
+	return key.JobState
+}
+
+// openTaskPRState maps an absent pr_state onto PRStateUnknown: a record the sweep
+// has never written is unobserved, not PR-less. The sweep writes PRStateNone for a
+// record with no PR, so the two never collapse.
+func openTaskPRState(key OpenTaskKey) string {
+	if key.PRState == "" {
+		return PRStateUnknown
+	}
+	return key.PRState
 }
 
 // openTaskPhase maps an absent phase onto PhaseUnknown, mirroring openTaskType. A

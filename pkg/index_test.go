@@ -194,17 +194,85 @@ var _ = Describe("Index", func() {
 			taskFrontmatter("status: in_progress", "task_type: pr-review", `stage: ""`),
 		)
 		writeFile(tasksDir, "Iota", taskFrontmatter("status: in_progress", "task_type: pr-review"))
+		// Kappa carries a claimed job, Lambda a written-back PR state, and Mu
+		// neither: the two new labels must separate all three.
+		writeFile(
+			tasksDir,
+			"Kappa",
+			taskFrontmatter(
+				"status: in_progress",
+				"task_type: pr-review",
+				"stage: prod",
+				"current_job: pr-reviewer-agent-123",
+				"pr_state: open",
+			),
+		)
+		writeFile(
+			tasksDir,
+			"Lambda",
+			taskFrontmatter(
+				"status: in_progress",
+				"task_type: pr-review",
+				"stage: prod",
+				`current_job: ""`,
+				"pr_state: merged",
+			),
+		)
 		Expect(index.Build(ctx, store)).To(Succeed())
 
 		// completed and aborted are excluded; a task with no stage, no task_type,
 		// no phase or no status line still counts as open, under the matching
 		// unknown bucket. Eta carries phase: execution and no status line.
 		Expect(metrics.openTasks).To(Equal(map[vaultapi.OpenTaskKey]int{
-			{Stage: "prod", TaskType: "pr-review", Phase: "unknown"}:     2, // Alpha, Beta
-			{Stage: "prod", TaskType: "unknown", Phase: "unknown"}:       1, // Zeta — no task_type
-			{Stage: "dev", TaskType: "github-release", Phase: "unknown"}: 1, // Epsilon
-			{Stage: "dev", TaskType: "pr-review", Phase: "execution"}:    1, // Eta — no status line
-			{Stage: "unknown", TaskType: "pr-review", Phase: "unknown"}:  2, // Theta empty stage, Iota missing
+			{
+				Stage:    "prod",
+				TaskType: "pr-review",
+				Phase:    "unknown",
+				JobState: vaultapi.JobNone,
+				PRState:  vaultapi.PRStateUnknown,
+			}: 2, // Alpha, Beta — neither a job nor a sweep-observed PR
+			{
+				Stage:    "prod",
+				TaskType: "unknown",
+				Phase:    "unknown",
+				JobState: vaultapi.JobNone,
+				PRState:  vaultapi.PRStateUnknown,
+			}: 1, // Zeta — no task_type
+			{
+				Stage:    "dev",
+				TaskType: "github-release",
+				Phase:    "unknown",
+				JobState: vaultapi.JobNone,
+				PRState:  vaultapi.PRStateUnknown,
+			}: 1, // Epsilon
+			{
+				Stage:    "dev",
+				TaskType: "pr-review",
+				Phase:    "execution",
+				JobState: vaultapi.JobNone,
+				PRState:  vaultapi.PRStateUnknown,
+			}: 1, // Eta — no status line
+			{
+				Stage:    "unknown",
+				TaskType: "pr-review",
+				Phase:    "unknown",
+				JobState: vaultapi.JobNone,
+				PRState:  vaultapi.PRStateUnknown,
+			}: 2, // Theta empty stage, Iota missing
+			{
+				Stage:    "prod",
+				TaskType: "pr-review",
+				Phase:    "unknown",
+				JobState: vaultapi.JobRunning,
+				PRState:  "open",
+			}: 1, // Kappa — claimed job, PR open
+			{
+				Stage:    "prod",
+				TaskType: "pr-review",
+				Phase:    "unknown",
+				JobState: vaultapi.JobNone,
+				PRState:  "merged",
+			}: 1, // Lambda — empty current_job, PR merged
 		}))
 		Expect(metrics.setCalls).To(Equal(1))
 	})

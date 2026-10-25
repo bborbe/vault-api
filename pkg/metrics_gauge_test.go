@@ -19,12 +19,20 @@ type openTaskSample struct {
 	instanceStage string
 	taskType      string
 	phase         string
+	jobState      string
+	prState       string
 	vault         string
 }
 
-// seriesKey renders the three variable labels so a test can address one series.
-func seriesKey(stage string, taskType string, phase string) string {
-	return stage + "/" + taskType + "/" + phase
+// seriesKey renders the variable labels so a test can address one series.
+func seriesKey(
+	stage string,
+	taskType string,
+	phase string,
+	jobState string,
+	prState string,
+) string {
+	return stage + "/" + taskType + "/" + phase + "/" + jobState + "/" + prState
 }
 
 var _ = Describe("Metrics", func() {
@@ -34,26 +42,40 @@ var _ = Describe("Metrics", func() {
 			metrics := vaultapi.NewMetrics("prod", "private-agent")
 
 			metrics.SetOpenTasks(map[vaultapi.OpenTaskKey]int{
-				{Stage: "prod", TaskType: "pr-review", Phase: "planning"}:     3,
-				{Stage: "prod", TaskType: "pr-review", Phase: "human_review"}: 5,
-				{Stage: "dev", TaskType: "pr-review", Phase: "human_review"}:  1,
-				{Stage: "", TaskType: "github-release", Phase: ""}:            2,
-				{Stage: "dev", TaskType: "", Phase: "execution"}:              4,
+				{Stage: "prod", TaskType: "pr-review", Phase: "planning"}: 3,
+				{
+					Stage:    "prod",
+					TaskType: "pr-review",
+					Phase:    "human_review",
+					JobState: vaultapi.JobRunning,
+					PRState:  "open",
+				}: 5,
+				{Stage: "dev", TaskType: "pr-review", Phase: "human_review"}: 1,
+				{Stage: "", TaskType: "github-release", Phase: ""}:           2,
+				{Stage: "dev", TaskType: "", Phase: "execution"}:             4,
 			})
 
 			samples := gatherOpenTasks()
 			Expect(samples).To(HaveLen(5))
 			// One stage and task_type split into two series when the phase differs —
 			// that split is the whole point of the label.
-			Expect(samples[seriesKey("prod", "pr-review", "planning")].value).To(Equal(3.0))
-			Expect(samples[seriesKey("prod", "pr-review", "human_review")].value).To(Equal(5.0))
-			Expect(samples[seriesKey("dev", "pr-review", "human_review")].value).To(Equal(1.0))
+			Expect(
+				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, "unknown")].value,
+			).To(Equal(3.0))
+			// A record carrying a claimed job is its own series, and the PR state
+			// rides along with it: that is what makes "running" and "moot" selectable.
+			Expect(
+				samples[seriesKey("prod", "pr-review", "human_review", vaultapi.JobRunning, "open")].value,
+			).To(Equal(5.0))
+			Expect(
+				samples[seriesKey("dev", "pr-review", "human_review", vaultapi.JobNone, "unknown")].value,
+			).To(Equal(1.0))
 			// An absent stage, task_type and phase each land in their own unknown bucket.
 			Expect(
-				samples[seriesKey(vaultapi.StageUnknown, "github-release", vaultapi.PhaseUnknown)].value,
+				samples[seriesKey(vaultapi.StageUnknown, "github-release", vaultapi.PhaseUnknown, vaultapi.JobNone, vaultapi.PRStateUnknown)].value,
 			).To(Equal(2.0))
 			Expect(
-				samples[seriesKey("dev", vaultapi.TaskTypeUnknown, "execution")].value,
+				samples[seriesKey("dev", vaultapi.TaskTypeUnknown, "execution", vaultapi.JobNone, vaultapi.PRStateUnknown)].value,
 			).To(Equal(4.0))
 
 			for key, sample := range samples {
@@ -69,7 +91,9 @@ var _ = Describe("Metrics", func() {
 
 			samples = gatherOpenTasks()
 			Expect(samples).To(HaveLen(1))
-			Expect(samples[seriesKey("prod", "pr-review", "planning")].value).To(Equal(1.0))
+			Expect(
+				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, vaultapi.PRStateUnknown)].value,
+			).To(Equal(1.0))
 		},
 	)
 })
@@ -96,9 +120,13 @@ func gatherOpenTasks() map[string]openTaskSample {
 					sample.instanceStage = label.GetValue()
 				case "vault":
 					sample.vault = label.GetValue()
+				case "job_state":
+					sample.jobState = label.GetValue()
+				case "pr_state":
+					sample.prState = label.GetValue()
 				}
 			}
-			samples[seriesKey(sample.stage, sample.taskType, sample.phase)] = sample
+			samples[seriesKey(sample.stage, sample.taskType, sample.phase, sample.jobState, sample.prState)] = sample
 		}
 	}
 	return samples

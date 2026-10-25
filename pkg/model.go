@@ -19,6 +19,15 @@ type TaskItem struct {
 	Cluster  *string  `json:"cluster"`
 	Flag     bool     `json:"flag"`
 	Vault    string   `json:"vault"`
+	// CurrentJob is the task's raw frontmatter current_job — the id of the job
+	// that claimed it, empty when none has. The gauge reports its presence as
+	// job_state; the id itself is served because a reader chasing a stuck record
+	// needs the job, not just the fact of one.
+	CurrentJob string `json:"current_job,omitempty"`
+	// PRState is the task's last observed PR state, written into the frontmatter
+	// by the daily close-obsolete sweep: open, merged, closed or none. Empty means
+	// the sweep has not looked at this record yet.
+	PRState string `json:"pr_state,omitempty"`
 }
 
 // GoalItem is the typed projection of one goal page. It is served by
