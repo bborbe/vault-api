@@ -138,6 +138,17 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		initialBaseline = ""
 	}
 
+	// Logged on success as well as on failure: the baseline a restart resumes from
+	// is the only observable that separates a persisted baseline from a
+	// process-local one, and a pod's log is readable where its filesystem is not.
+	// "none" is a literal sentinel rather than an empty string so a reader can
+	// never mistake an absent baseline for a commit.
+	loadedBaseline := "none"
+	if initialBaseline != "" {
+		loadedBaseline = initialBaseline
+	}
+	glog.V(2).Infof("event baseline loaded: %s", loadedBaseline)
+
 	// Always a Feed, even with a nil factory: the no-broker case then still owns a
 	// baseline and simply publishes nothing, so the loop needs no nil checks.
 	feed := vaultapi.NewFeedWithBaseline(factory, publisher.IsPermanent, initialBaseline)
