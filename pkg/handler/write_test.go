@@ -100,6 +100,16 @@ func (fakeMetrics) AddFileReads(string, int64) {}
 
 func (fakeMetrics) SetOpenTasks(map[vaultapi.OpenTaskKey]int) {}
 
+// newTestStore is the page storage every handler suite hands to NewHandler. The
+// handlers read through it rather than the filesystem, so it must be a real
+// store even where the spec never exercises a read.
+func newTestStore() storage.PageStorage {
+	config := storage.DefaultConfig()
+	config.TasksDir = "25 Tasks"
+	config.GoalsDir = "24 Goals"
+	return storage.NewPageStorage(config)
+}
+
 var _ = Describe("Write endpoints", func() {
 	const secret = "test-secret"
 
@@ -137,7 +147,17 @@ var _ = Describe("Write endpoints", func() {
 		))
 
 		router = handler.NewHandler(
-			ctx, index, secret, vaultPath, "test", writer, clock, published, &fakeRefClient{},
+			ctx,
+			index,
+			newTestStore(),
+			secret,
+			vaultPath,
+			"25 Tasks",
+			"test",
+			writer,
+			clock,
+			published,
+			&fakeRefClient{},
 		)
 	})
 
@@ -477,7 +497,17 @@ var _ = Describe("Write endpoints", func() {
 			zero := libtime.NewCurrentDateTime()
 			zero.SetNow(libtime.DateTime{})
 			zeroClock := handler.NewHandler(
-				ctx, index, secret, vaultPath, "test", writer, zero, published, &fakeRefClient{},
+				ctx,
+				index,
+				newTestStore(),
+				secret,
+				vaultPath,
+				"25 Tasks",
+				"test",
+				writer,
+				zero,
+				published,
+				&fakeRefClient{},
 			)
 			request := httptest.NewRequest(
 				http.MethodPost,

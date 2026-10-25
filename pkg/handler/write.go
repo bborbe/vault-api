@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,7 +40,9 @@ const publishTimeout = 5 * time.Second
 // turns a landed write into a change event on the task topic.
 type writeDeps struct {
 	index         *vaultapi.Index
+	store         storage.PageStorage
 	vaultPath     string
+	tasksDir      string
 	vault         string
 	writer        gitrest.Client
 	clock         libtime.CurrentDateTime
@@ -222,8 +222,11 @@ func loadDocument(
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 		return document{}, false
 	}
-	fullPath := filepath.Join(deps.vaultPath, filepath.FromSlash(item.Path))
-	raw, err := os.ReadFile(fullPath)
+	// The read goes through the page storage rather than the filesystem, so it
+	// increments vault_api_file_reads_total{kind="page_read"}. That counter is the
+	// positive control a verification run discriminates on: a handler that read
+	// the file directly would leave the criterion nothing to observe.
+	page, err := deps.store.ReadPage(ctx, deps.vaultPath, deps.tasksDir, item.Title)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  "read_failed",
@@ -232,6 +235,7 @@ func loadDocument(
 		})
 		return document{}, false
 	}
+	raw := []byte(string(page.Content))
 	frontmatter, err := storage.ParseFrontmatterMap(ctx, raw)
 	if err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
@@ -284,6 +288,21 @@ func (d document) write(
 	deps writeDeps,
 	status, phase string,
 ) {
+	if !d.persist(ctx, w, deps) {
+		return
+	}
+	writeJSON(w, http.StatusOK, writeResponse{
+		ID:     d.item.ID,
+		Path:   d.item.Path,
+		Status: status,
+		Phase:  phase,
+	})
+}
+
+// persist renders the changed keys into the original bytes, hands the file to
+// git-rest and publishes the change event. It answers its own failures and
+// reports whether the caller should go on to write a response.
+func (d document) persist(ctx context.Context, w http.ResponseWriter, deps writeDeps) bool {
 	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(d.raw))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -291,7 +310,7 @@ func (d document) write(
 			"reason": err.Error(),
 			"path":   d.item.Path,
 		})
-		return
+		return false
 	}
 	if err := deps.writer.WriteFile(ctx, d.item.Path, []byte(rendered)); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{
@@ -299,7 +318,7 @@ func (d document) write(
 			"reason": err.Error(),
 			"path":   d.item.Path,
 		})
-		return
+		return false
 	}
 	// The file has landed in git, so the response is already decided: a publish
 	// failure must not turn a write that happened into an error the client retries,
@@ -333,12 +352,7 @@ func (d document) write(
 			)
 		}
 	}
-	writeJSON(w, http.StatusOK, writeResponse{
-		ID:     d.item.ID,
-		Path:   d.item.Path,
-		Status: status,
-		Phase:  phase,
-	})
+	return true
 }
 
 // task renders the document as a change-event payload. The identifier is the
@@ -354,21 +368,40 @@ func (d document) task(vault string) lib.Task {
 	}
 }
 
+// frontmatterEnd returns the offset just past the frontmatter block's closing
+// delimiter, or -1 when the content carries no parseable block.
+//
+// The delimiter is a line that is exactly "---". Matching a bare "\n---" prefix
+// instead would also match a block scalar whose first line begins with dashes —
+// YAML permits one — and then cut the real frontmatter in half, moving the rest
+// of it into the body. That is the one way the read and the body write can
+// silently corrupt a task.
+func frontmatterEnd(raw string) int {
+	lines := strings.SplitAfter(raw, "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], "\r\n") != "---" {
+		return -1
+	}
+	offset := len(lines[0])
+	for _, line := range lines[1:] {
+		offset += len(line)
+		if strings.TrimRight(line, "\r\n") == "---" {
+			return offset
+		}
+	}
+	return -1
+}
+
 // taskBody returns the markdown body after the frontmatter's closing delimiter.
 // A write re-renders only the frontmatter, so the body is taken from the bytes on
 // disk rather than from the rendered string.
 func taskBody(raw string) string {
-	rest, found := strings.CutPrefix(raw, "---")
-	if !found {
-		return ""
-	}
-	end := strings.Index(rest, "\n---")
+	end := frontmatterEnd(raw)
 	if end < 0 {
 		return ""
 	}
 	// Both line endings, because a vault checked out on a machine with autocrlf can
 	// carry CRLF and the event body must not start with a stray \r.
-	return strings.TrimPrefix(strings.TrimPrefix(rest[end+len("---")+1:], "\r"), "\n")
+	return strings.TrimPrefix(strings.TrimPrefix(raw[end:], "\r"), "\n")
 }
 
 // decodeBody reads a JSON body capped at the write endpoints' limit, answering
