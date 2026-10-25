@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -105,6 +106,12 @@ var _ = Describe("Claim handlers", func() {
 		repoScope := handler.RepoClaimScope()
 		api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodPost).
 			HandlerFunc(handler.AcquireClaimHandler(deps, repoScope))
+		api.Path("/repos/{owner}/{repo}/claim/renew").Methods(http.MethodPost).
+			HandlerFunc(handler.RenewClaimHandler(deps, repoScope))
+		api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodDelete).
+			HandlerFunc(handler.ReleaseClaimHandler(deps, repoScope))
+		api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodGet).
+			HandlerFunc(handler.ReadClaimHandler(deps, repoScope))
 		return r
 	}
 
@@ -189,6 +196,38 @@ var _ = Describe("Claim handlers", func() {
 			Expect(recorder.Code).To(Equal(http.StatusCreated))
 			Expect(refs.lastPut.ExpectedSHA).To(Equal("expired-sha"))
 			Expect(decode()["holder"]).To(Equal("nukedev"))
+		})
+
+		It("takes over a claim whose stored lease cannot be parsed", func() {
+			// A ref carrying no trustworthy expiry would otherwise block the key
+			// forever, so the unparsable case fails open like an expired one.
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-1",
+				SHA:        "broken-sha",
+				Cluster:    "sun",
+				LeaseUntil: "not-a-timestamp",
+			}}
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastPut.ExpectedSHA).To(Equal("broken-sha"))
+		})
+
+		It("answers 500 when the claim cannot be read before the write", func() {
+			refs.listErr = stderrors.New("git-rest unreachable")
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
+			Expect(recorder.Code).To(Equal(http.StatusInternalServerError))
+			Expect(decode()["error"]).To(Equal("claim_read_failed"))
+			Expect(refs.lastPut.Cluster).To(BeEmpty(), "no write may follow a failed read")
+		})
+
+		It("answers 400 when git-rest refuses the write as the caller's mistake", func() {
+			refs.putErr = &gitrest.StatusError{
+				StatusCode: http.StatusBadRequest,
+				Body:       "bad ref name",
+			}
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("invalid_claim"))
 		})
 
 		It("answers 400 for a ttl above the bound", func() {
@@ -298,10 +337,60 @@ var _ = Describe("Claim handlers", func() {
 			Expect(decode()["id"]).To(Equal("bborbe/git-rest"))
 		})
 
+		It("derives the executor's key, so both name one ref", func() {
+			// The executor lowercases owner and repo before joining them with a
+			// hyphen; a second spelling here would be a second lock.
+			post("/api/v1/repos/BBorbe/Git-Rest/claim", `{"holder":"nukedev","task_id":"run-1"}`)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastKey).To(Equal("claims/repo/bborbe-git-rest"))
+			Expect(decode()["id"]).To(Equal("bborbe/git-rest"))
+		})
+
+		It("answers 404 for a name that cannot be part of a claim key", func() {
+			post("/api/v1/repos/.hidden/git-rest/claim", `{"holder":"nukedev","task_id":"run-1"}`)
+			Expect(recorder.Code).To(Equal(http.StatusNotFound))
+			Expect(decode()["error"]).To(Equal("not_found"))
+			Expect(refs.lastKey).To(BeEmpty(), "an unaddressable name must not reach the transport")
+		})
+
 		It("answers 400 when the run supplies no task id", func() {
 			post("/api/v1/repos/bborbe/git-rest/claim", `{"holder":"nukedev"}`)
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
 			Expect(decode()["error"]).To(Equal("missing_task_id"))
+		})
+
+		It("renews, reads and releases the same repository claim", func() {
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/repo/bborbe-git-rest",
+				SHA:        "held-sha",
+				Cluster:    "sun",
+				LeaseUntil: "2026-10-25T12:05:00Z",
+			}}
+
+			post("/api/v1/repos/bborbe/git-rest/claim/renew",
+				`{"holder":"nukedev","task_id":"run-1","lease_token":"held-sha"}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(refs.lastPut.ExpectedSHA).To(Equal("held-sha"))
+
+			recorder = httptest.NewRecorder()
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/api/v1/repos/bborbe/git-rest/claim",
+				nil,
+			)
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode()["holder"]).To(Equal("sun"))
+
+			recorder = httptest.NewRecorder()
+			request = httptest.NewRequest(
+				http.MethodDelete,
+				"/api/v1/repos/bborbe/git-rest/claim",
+				bytes.NewBufferString(`{"lease_token":"held-sha"}`),
+			)
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+			Expect(recorder.Code).To(Equal(http.StatusNoContent))
+			Expect(refs.lastDelete).To(Equal("held-sha"))
 		})
 	})
 })

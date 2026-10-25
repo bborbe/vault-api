@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"net/http"
+	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -104,12 +105,43 @@ func taskClaimScope(index *vaultapi.Index, id string) (ClaimScope, bool) {
 
 // repoClaimScope builds the claim address for a repository. A repository is
 // named by its owner and name rather than by any vault path.
-func repoClaimScope(owner string, repo string) ClaimScope {
+//
+// The key reproduces the one the task executor derives (lowercased owner and
+// repo, hyphen-joined) rather than inventing a second spelling: the executor is
+// the other holder of these refs, and two spellings of one repository would be
+// two locks that do not exclude each other.
+func repoClaimScope(owner string, repo string) (ClaimScope, bool) {
+	owner = strings.ToLower(owner)
+	repo = strings.ToLower(repo)
+	if !validClaimComponent(owner) || !validClaimComponent(repo) {
+		return ClaimScope{}, false
+	}
 	return ClaimScope{
 		Scope: "repo",
 		ID:    owner + "/" + repo,
 		Key:   "claims/repo/" + owner + "-" + repo,
+	}, true
+}
+
+// validClaimComponent reports whether a name can be part of a claim key. The
+// transport refuses anything outside this set anyway; checking here answers for
+// an object that cannot exist instead of proxying the transport's refusal.
+func validClaimComponent(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
 	}
+	if strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".lock") {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // TaskClaimScope resolves the {id} path variable to a task claim scope.
@@ -120,15 +152,12 @@ func TaskClaimScope(index *vaultapi.Index) func(*http.Request) (ClaimScope, bool
 }
 
 // RepoClaimScope resolves the {owner} and {repo} path variables to a repo claim
-// scope. It cannot fail: a repository needs no index entry to be claimed.
+// scope. It fails only for a name that cannot be part of a claim key: a
+// repository needs no index entry to be claimed.
 func RepoClaimScope() func(*http.Request) (ClaimScope, bool) {
 	return func(r *http.Request) (ClaimScope, bool) {
 		vars := mux.Vars(r)
-		owner, repo := vars["owner"], vars["repo"]
-		if owner == "" || repo == "" {
-			return ClaimScope{}, false
-		}
-		return repoClaimScope(owner, repo), true
+		return repoClaimScope(vars["owner"], vars["repo"])
 	}
 }
 
