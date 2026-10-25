@@ -23,14 +23,21 @@ const (
 	// StageUnknown is the label value used for a task whose frontmatter carries no
 	// stage, for the same reason as TaskTypeUnknown.
 	StageUnknown = "unknown"
+	// PhaseUnknown is the label value used for a task whose frontmatter carries no
+	// phase, for the same reason as TaskTypeUnknown.
+	PhaseUnknown = "unknown"
 )
 
 // OpenTaskKey identifies one vault_api_open_tasks series. Stage is the task's own
 // frontmatter stage — the environment its work targets — not the stage of the
 // vault-api instance serving it; that one is the constant instance_stage label.
+// Phase is the task's normalized frontmatter phase: the index normalises through
+// domain.NormalizeTaskPhase before storing it, so the label never carries both
+// spellings of one phase (in_progress is reported as execution).
 type OpenTaskKey struct {
 	Stage    string
 	TaskType string
+	Phase    string
 }
 
 // Metrics is the instrumentation the storage decorator and the index write to.
@@ -59,12 +66,12 @@ func NewMetrics(instanceStage string, vault string) Metrics {
 		}, []string{"kind"}),
 		openTasks: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "vault_api_open_tasks",
-			Help: "Number of open tasks in the vault — status neither completed nor aborted — by the task's own frontmatter stage and by task_type. Unit: tasks.",
+			Help: "Number of open tasks in the vault — status neither completed nor aborted — by the task's own frontmatter stage, by task_type and by phase. Unit: tasks.",
 			ConstLabels: prometheus.Labels{
 				"instance_stage": instanceStage,
 				"vault":          vault,
 			},
-		}, []string{"stage", "task_type"}),
+		}, []string{"stage", "task_type", "phase"}),
 	}
 	prometheus.MustRegister(m.fileReads, m.openTasks)
 	for _, kind := range []string{FileReadKindList, FileReadKindRead} {
@@ -85,13 +92,18 @@ func (m *metrics) AddFileReads(kind string, count int64) {
 	m.fileReads.WithLabelValues(kind).Add(float64(count))
 }
 
-// SetOpenTasks replaces the whole (stage, task_type) series set. Resetting first
-// is what drops a series that no longer has open tasks — a gauge that only Set()
-// the keys it saw would leave the vanished one reporting its last value forever.
+// SetOpenTasks replaces the whole (stage, task_type, phase) series set. Resetting
+// first is what drops a series that no longer has open tasks — a gauge that only
+// Set() the keys it saw would leave the vanished one reporting its last value
+// forever.
 func (m *metrics) SetOpenTasks(counts map[OpenTaskKey]int) {
 	m.openTasks.Reset()
 	for key, count := range counts {
-		m.openTasks.WithLabelValues(openTaskStage(key), openTaskType(key)).Set(float64(count))
+		m.openTasks.WithLabelValues(
+			openTaskStage(key),
+			openTaskType(key),
+			openTaskPhase(key),
+		).Set(float64(count))
 	}
 }
 
@@ -110,4 +122,14 @@ func openTaskType(key OpenTaskKey) string {
 		return TaskTypeUnknown
 	}
 	return key.TaskType
+}
+
+// openTaskPhase maps an absent phase onto PhaseUnknown, mirroring openTaskType. A
+// non-empty phase passes through verbatim: it has already been normalised by the
+// index, and coercing an unexpected value would hide it.
+func openTaskPhase(key OpenTaskKey) string {
+	if key.Phase == "" {
+		return PhaseUnknown
+	}
+	return key.Phase
 }

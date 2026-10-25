@@ -154,7 +154,7 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 
 	// Published after the swap so a scrape never sees the new counts against
 	// the old index.
-	i.metrics.SetOpenTasks(openTasksByStageAndType(tasks))
+	i.metrics.SetOpenTasks(openTasksByStageTypeAndPhase(tasks))
 	return nil
 }
 
@@ -188,23 +188,26 @@ func (i *Index) Built() bool {
 	return i.built
 }
 
-// openTasksByStageAndType counts the indexed tasks whose status is neither
-// completed nor aborted, per frontmatter stage and task_type. A task with no
-// stage or no task_type counts under the matching unknown bucket, and one with
-// no status counts as open — an unparseable status is what excludes a page, not
-// a missing one (see buildTasks).
-func openTasksByStageAndType(tasks []TaskItem) map[OpenTaskKey]int {
+// openTasksByStageTypeAndPhase counts the indexed tasks whose status is neither
+// completed nor aborted, per frontmatter stage, task_type and phase. A task with
+// no stage, no task_type or no phase counts under the matching unknown bucket,
+// and one with no status counts as open — an unparseable status is what excludes
+// a page, not a missing one (see buildTasks).
+func openTasksByStageTypeAndPhase(tasks []TaskItem) map[OpenTaskKey]int {
 	counts := make(map[OpenTaskKey]int, len(tasks))
 	for _, task := range tasks {
 		if task.Status == "completed" || task.Status == "aborted" {
 			continue
 		}
-		key := OpenTaskKey{Stage: task.Stage, TaskType: task.TaskType}
+		key := OpenTaskKey{Stage: task.Stage, TaskType: task.TaskType, Phase: task.Phase}
 		if key.Stage == "" {
 			key.Stage = StageUnknown
 		}
 		if key.TaskType == "" {
 			key.TaskType = TaskTypeUnknown
+		}
+		if key.Phase == "" {
+			key.Phase = PhaseUnknown
 		}
 		counts[key]++
 	}

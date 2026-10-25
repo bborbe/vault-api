@@ -18,34 +18,43 @@ type openTaskSample struct {
 	stage         string
 	instanceStage string
 	taskType      string
+	phase         string
 	vault         string
 }
 
-// seriesKey renders the two variable labels so a test can address one series.
-func seriesKey(stage string, taskType string) string {
-	return stage + "/" + taskType
+// seriesKey renders the three variable labels so a test can address one series.
+func seriesKey(stage string, taskType string, phase string) string {
+	return stage + "/" + taskType + "/" + phase
 }
 
 var _ = Describe("Metrics", func() {
 	It(
-		"labels the open-task gauge by the task's stage and keeps the instance stage constant",
+		"labels the open-task gauge by the task's stage, task_type and phase, and keeps the instance stage constant",
 		func() {
 			metrics := vaultapi.NewMetrics("prod", "private-agent")
 
 			metrics.SetOpenTasks(map[vaultapi.OpenTaskKey]int{
-				{Stage: "prod", TaskType: "pr-review"}:  3,
-				{Stage: "dev", TaskType: "pr-review"}:   1,
-				{Stage: "", TaskType: "github-release"}: 2,
-				{Stage: "dev", TaskType: ""}:            4,
+				{Stage: "prod", TaskType: "pr-review", Phase: "planning"}:     3,
+				{Stage: "prod", TaskType: "pr-review", Phase: "human_review"}: 5,
+				{Stage: "dev", TaskType: "pr-review", Phase: "human_review"}:  1,
+				{Stage: "", TaskType: "github-release", Phase: ""}:            2,
+				{Stage: "dev", TaskType: "", Phase: "execution"}:              4,
 			})
 
 			samples := gatherOpenTasks()
-			Expect(samples).To(HaveLen(4))
-			Expect(samples[seriesKey("prod", "pr-review")].value).To(Equal(3.0))
-			Expect(samples[seriesKey("dev", "pr-review")].value).To(Equal(1.0))
-			// An absent stage and an absent task_type each land in their own unknown bucket.
-			Expect(samples[seriesKey(vaultapi.StageUnknown, "github-release")].value).To(Equal(2.0))
-			Expect(samples[seriesKey("dev", vaultapi.TaskTypeUnknown)].value).To(Equal(4.0))
+			Expect(samples).To(HaveLen(5))
+			// One stage and task_type split into two series when the phase differs —
+			// that split is the whole point of the label.
+			Expect(samples[seriesKey("prod", "pr-review", "planning")].value).To(Equal(3.0))
+			Expect(samples[seriesKey("prod", "pr-review", "human_review")].value).To(Equal(5.0))
+			Expect(samples[seriesKey("dev", "pr-review", "human_review")].value).To(Equal(1.0))
+			// An absent stage, task_type and phase each land in their own unknown bucket.
+			Expect(
+				samples[seriesKey(vaultapi.StageUnknown, "github-release", vaultapi.PhaseUnknown)].value,
+			).To(Equal(2.0))
+			Expect(
+				samples[seriesKey("dev", vaultapi.TaskTypeUnknown, "execution")].value,
+			).To(Equal(4.0))
 
 			for key, sample := range samples {
 				Expect(sample.instanceStage).To(Equal("prod"), "instance_stage of %q", key)
@@ -55,12 +64,12 @@ var _ = Describe("Metrics", func() {
 			// Reset before set: a series that loses its last open task must not keep
 			// reporting its previous value.
 			metrics.SetOpenTasks(map[vaultapi.OpenTaskKey]int{
-				{Stage: "prod", TaskType: "pr-review"}: 1,
+				{Stage: "prod", TaskType: "pr-review", Phase: "planning"}: 1,
 			})
 
 			samples = gatherOpenTasks()
 			Expect(samples).To(HaveLen(1))
-			Expect(samples[seriesKey("prod", "pr-review")].value).To(Equal(1.0))
+			Expect(samples[seriesKey("prod", "pr-review", "planning")].value).To(Equal(1.0))
 		},
 	)
 })
@@ -79,6 +88,8 @@ func gatherOpenTasks() map[string]openTaskSample {
 				switch label.GetName() {
 				case "task_type":
 					sample.taskType = label.GetValue()
+				case "phase":
+					sample.phase = label.GetValue()
 				case "stage":
 					sample.stage = label.GetValue()
 				case "instance_stage":
@@ -87,7 +98,7 @@ func gatherOpenTasks() map[string]openTaskSample {
 					sample.vault = label.GetValue()
 				}
 			}
-			samples[seriesKey(sample.stage, sample.taskType)] = sample
+			samples[seriesKey(sample.stage, sample.taskType, sample.phase)] = sample
 		}
 	}
 	return samples
