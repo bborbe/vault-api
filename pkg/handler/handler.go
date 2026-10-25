@@ -174,6 +174,19 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 				return
 			}
 		}
+		// A task_type that survives the empty check above but yields no values —
+		// `?task_type=,` or `?task_type=,` — would otherwise apply no filter at all
+		// and return the whole vault, which is the silent widening the empty check
+		// exists to prevent. Splitting happens here so the refusal can name it.
+		taskTypes := taskTypeValues(query)
+		if _, present := query["task_type"]; present && len(taskTypes) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "invalid_filter",
+				"filter": "task_type",
+				"reason": "a filter must name at least one type; omit the parameter to leave it unset",
+			})
+			return
+		}
 		updatedSince, ok := parseUpdatedSince(w, query.Get("updated_since"))
 		if !ok {
 			return
@@ -184,7 +197,7 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			Phase:        query.Get("phase"),
 			Goal:         query.Get("goal"),
 			Cluster:      query.Get("cluster"),
-			TaskTypes:    taskTypeValues(query),
+			TaskTypes:    taskTypes,
 			ShortID:      query.Get("short_id"),
 			UpdatedSince: updatedSince,
 		})
