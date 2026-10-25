@@ -99,7 +99,9 @@ var _ = Describe("Index", func() {
 		))
 		Expect(index.Build(ctx, store)).To(Succeed())
 
-		byType, _, _ := index.QueryTasks(vaultapi.TaskFilter{TaskType: "sentry-deep-analyzer"})
+		byType, _, _ := index.QueryTasks(
+			vaultapi.TaskFilter{TaskTypes: []string{"sentry-deep-analyzer"}},
+		)
 		Expect(byType).To(HaveLen(1))
 		Expect(byType[0].Title).To(Equal("Alpha"))
 		Expect(byType[0].ShortID).To(Equal("7811216784"))
@@ -117,8 +119,30 @@ var _ = Describe("Index", func() {
 
 		// A typed filter matching nothing must return nothing, never fall back to
 		// the whole vault — that fallback is the failure this filter set prevents.
-		missing, _, _ := index.QueryTasks(vaultapi.TaskFilter{TaskType: "no-such-type"})
+		missing, _, _ := index.QueryTasks(
+			vaultapi.TaskFilter{TaskTypes: []string{"no-such-type"}},
+		)
 		Expect(missing).To(BeEmpty())
+
+		// Two types are a union, not a constraint: a caller whose population spans
+		// several types asks once and gets both, which is what stops it issuing one
+		// query per type and straddling a change between them.
+		union, _, _ := index.QueryTasks(vaultapi.TaskFilter{
+			TaskTypes: []string{"sentry-deep-analyzer", "build-fix"},
+		})
+		Expect(union).To(HaveLen(2))
+
+		// The union still intersects with the other filters rather than widening them.
+		unionFiltered, _, _ := index.QueryTasks(vaultapi.TaskFilter{
+			TaskTypes: []string{"sentry-deep-analyzer", "build-fix"},
+			Status:    "in_progress",
+		})
+		Expect(unionFiltered).To(HaveLen(2), "both seeded tasks are in_progress")
+		unionMiss, _, _ := index.QueryTasks(vaultapi.TaskFilter{
+			TaskTypes: []string{"sentry-deep-analyzer", "build-fix"},
+			Status:    "completed",
+		})
+		Expect(unionMiss).To(BeEmpty())
 	})
 
 	It("excludes a task with an unknown phase and counts it as a warning", func() {

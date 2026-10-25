@@ -38,8 +38,20 @@ type TaskFilter struct {
 	Phase    string
 	Goal     string
 	Cluster  string
-	TaskType string
-	ShortID  string
+	// TaskTypes is a set: a task matches when its type is any one of them, so a
+	// caller whose population spans several types asks once instead of issuing a
+	// query per type. A single-value filter is the one-element case.
+	//
+	// Two consequences a caller should know. An empty slice means "unset" like
+	// every other field here, but a slice holding one empty string means "match
+	// nothing" — build it from parsed input rather than from an optional field.
+	// And a value that resolves to no task is silently absorbed when another value
+	// matches: {a, typo} returns the a-tasks rather than nothing. That tolerance is
+	// deliberate, because a type with no pages yet is legitimate, but a dedup
+	// caller must not rely on the result being complete — it is the caller's own
+	// set that a dropped type would silently shrink.
+	TaskTypes []string
+	ShortID   string
 	// UpdatedSince keeps only tasks whose page was modified at or after it. It is
 	// a pointer so "no bound" and "modified at the zero instant" stay distinct.
 	UpdatedSince *time.Time
@@ -456,8 +468,8 @@ func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
 	if filter.Cluster != "" {
 		sets = append(sets, i.taskSets.cluster[filter.Cluster])
 	}
-	if filter.TaskType != "" {
-		sets = append(sets, i.taskSets.taskType[filter.TaskType])
+	if len(filter.TaskTypes) > 0 {
+		sets = append(sets, i.unionTaskTypes(filter.TaskTypes))
 	}
 	if filter.ShortID != "" {
 		sets = append(sets, i.taskSets.shortID[filter.ShortID])
@@ -471,6 +483,20 @@ func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
 		items = append(items, i.tasks[idx])
 	}
 	return items
+}
+
+// unionTaskTypes returns every task whose type is any one of types. It is a union
+// rather than an intersection because the values are alternatives, not
+// constraints: a caller asking for two types wants both populations, while the
+// other filters still narrow by intersection.
+func (i *Index) unionTaskTypes(types []string) map[int]struct{} {
+	combined := make(map[int]struct{})
+	for _, taskType := range types {
+		for idx := range i.taskSets.taskType[taskType] {
+			combined[idx] = struct{}{}
+		}
+	}
+	return combined
 }
 
 // matchingIndexes returns the task indexes present in every set, or all of them
