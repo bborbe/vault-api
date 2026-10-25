@@ -175,7 +175,7 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			}
 		}
 		// A task_type that survives the empty check above but yields no values —
-		// `?task_type=,` or `?task_type=,` — would otherwise apply no filter at all
+		// `?task_type=,` or `?task_type=,,` — would otherwise apply no filter at all
 		// and return the whole vault, which is the silent widening the empty check
 		// exists to prevent. Splitting happens here so the refusal can name it.
 		taskTypes := taskTypeValues(query)

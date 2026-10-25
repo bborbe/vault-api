@@ -41,6 +41,15 @@ type TaskFilter struct {
 	// TaskTypes is a set: a task matches when its type is any one of them, so a
 	// caller whose population spans several types asks once instead of issuing a
 	// query per type. A single-value filter is the one-element case.
+	//
+	// Two consequences a caller should know. An empty slice means "unset" like
+	// every other field here, but a slice holding one empty string means "match
+	// nothing" — build it from parsed input rather than from an optional field.
+	// And a value that resolves to no task is silently absorbed when another value
+	// matches: {a, typo} returns the a-tasks rather than nothing. That tolerance is
+	// deliberate, because a type with no pages yet is legitimate, but a dedup
+	// caller must not rely on the result being complete — it is the caller's own
+	// set that a dropped type would silently shrink.
 	TaskTypes []string
 	ShortID   string
 	// UpdatedSince keeps only tasks whose page was modified at or after it. It is
