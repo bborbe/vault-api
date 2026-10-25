@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.13.0
 
 - feat: Add `phase` to `vault_api_open_tasks`, so the open-task count splits by work phase instead of collapsing every non-terminal record into one number. The gauge carried `{stage, task_type}` only, which is why the dashboard showed 43 open `pr-review` records as a single line even though 36 sat at `planning`, 5 at `human_review`, 1 at `execution` and 1 at `in_progress` — four populations whose remedies are different. `OpenTaskKey` gains `Phase`, the gauge declares `phase` as a third variable label, and `openTasksByStageTypeAndPhase` keys on it; a task with no `phase` counts under `PhaseUnknown`, mirroring `StageUnknown` / `TaskTypeUnknown`, so the gauge total still equals the real open count instead of silently dropping unphased pages. **The label carries the normalized phase, never the raw frontmatter string:** the index runs `domain.NormalizeTaskPhase` before storing `Phase`, and that maps the legacy `in_progress` alias onto `execution`, so the gauge emits seven phase values and never both spellings of one phase. The addition is additive — every existing query that does not name `phase` keeps working unchanged, and a pod that has not rolled yet keeps reporting the two-label series until it does.
 
