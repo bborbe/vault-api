@@ -144,13 +144,17 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	defer feed.Close()
 
 	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
+	// The ref client talks to the same git-rest instance on a different route.
+	// It is separate from the writer because a claim write has a third outcome —
+	// it lost the compare-and-swap — that a file write cannot report.
+	refs := gitrest.NewRefClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
 
 	return run.CancelOnFirstFinish(ctx,
 		a.refresh(index, store, feed, baselineStore),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
 			ctx, index, a.GatewaySecret, a.VaultPath, a.eventVaultName(), writer,
-			libtime.NewCurrentDateTime(), taskPublisher,
+			libtime.NewCurrentDateTime(), taskPublisher, refs,
 		)),
 	)
 }
