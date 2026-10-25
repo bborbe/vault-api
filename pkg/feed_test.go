@@ -17,12 +17,16 @@ import (
 // fakeEmitter records every Emit call so the specs can assert counts, which is
 // what makes a never-publishing build fail them.
 type fakeEmitter struct {
-	calls int
-	err   error
+	calls    int
+	oldHeads []string
+	newHeads []string
+	err      error
 }
 
-func (f *fakeEmitter) Emit(_ context.Context, _ string, _ string) error {
+func (f *fakeEmitter) Emit(_ context.Context, oldHead string, newHead string) error {
 	f.calls++
+	f.oldHeads = append(f.oldHeads, oldHead)
+	f.newHeads = append(f.newHeads, newHead)
 	return f.err
 }
 
@@ -91,6 +95,27 @@ var _ = Describe("Feed", func() {
 		Entry("keeps the baseline when the producer cannot be built",
 			"aaaaaaa1", "bbbbbbb2", nil, errors.New("broker unreachable"), "aaaaaaa1", 0),
 	)
+
+	It("resumes from a persisted baseline instead of adopting the first head", func() {
+		// The restart case: commits landed while the process was down. A feed with a
+		// process-local baseline adopts the current head and publishes nothing, so the
+		// range is lost silently. A feed given the persisted baseline publishes that
+		// range — the range itself is asserted, not just the call count, because a
+		// call with the wrong oldHead would republish or skip the wrong commits.
+		emitter := &fakeEmitter{}
+		feed := vaultapi.NewFeedWithBaseline(
+			func(_ context.Context) (vaultapi.Emitter, func() error, error) {
+				return emitter, func() error { return nil }, nil
+			},
+			nil,
+			"aaaaaaa1",
+		)
+
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("bbbbbbb2"))
+		Expect(emitter.calls).To(Equal(1))
+		Expect(emitter.oldHeads).To(Equal([]string{"aaaaaaa1"}))
+		Expect(emitter.newHeads).To(Equal([]string{"bbbbbbb2"}))
+	})
 
 	It("builds the producer lazily, once, and reuses it", func() {
 		// The producer must not be built until there is something to publish: a

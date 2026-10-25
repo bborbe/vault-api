@@ -40,35 +40,41 @@ type application struct {
 	SentryDSN   string `required:"false" arg:"sentry-dsn"   env:"SENTRY_DSN"   usage:"Sentry DSN"   display:"length"`
 	SentryProxy string `required:"false" arg:"sentry-proxy" env:"SENTRY_PROXY" usage:"Sentry Proxy"`
 
-	Listen    string `required:"false" arg:"listen"           env:"LISTEN"           usage:"HTTP listen address"                                                                                                                 default:":9090"`
-	VaultPath string `required:"true"  arg:"vault-path"       env:"VAULT_PATH"       usage:"path to the vault git working tree"`
-	VaultName string `required:"true"  arg:"vault-name"       env:"VAULT_NAME"       usage:"vault name reported in responses"`
+	Listen    string `required:"false" arg:"listen"              env:"LISTEN"              usage:"HTTP listen address"                                                                                                                                                     default:":9090"`
+	VaultPath string `required:"true"  arg:"vault-path"          env:"VAULT_PATH"          usage:"path to the vault git working tree"`
+	VaultName string `required:"true"  arg:"vault-name"          env:"VAULT_NAME"          usage:"vault name reported in responses"`
 	// EventVaultName is the vault slug stamped on task change events as
 	// lib.Task.Vault. It is a routing identity, not a display name: a consumer
 	// that shares one topic across vaults owns a task only when this value equals
 	// its own, and the agent-task-controller stamps its VAULT_NAME into the same
 	// field. Empty falls back to VaultName, which is correct only where the
 	// display name and the routing slug coincide.
-	EventVaultName  string           `required:"false" arg:"event-vault-name" env:"EVENT_VAULT_NAME" usage:"vault slug stamped on task change events; must equal the controller's VAULT_NAME and the executor's TASK_VAULT. Empty = vault-name."`
-	InstanceStage   string           `required:"false" arg:"instance-stage"   env:"INSTANCE_STAGE"   usage:"stage of this vault-api instance, reported as the instance_stage metric label (dev, prod). Distinct from the per-task stage label."  default:""`
-	TasksDir        string           `required:"false" arg:"tasks-dir"        env:"TASKS_DIR"        usage:"task directory inside the vault"                                                                                                     default:"25 Tasks"`
-	GoalsDir        string           `required:"false" arg:"goals-dir"        env:"GOALS_DIR"        usage:"goal directory inside the vault"                                                                                                     default:"24 Goals"`
-	GatewaySecret   string           `required:"false" arg:"gateway-secret"   env:"GATEWAY_SECRET"   usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                               display:"length"`
-	GitRestURL      string           `required:"false" arg:"git-rest-url"     env:"GIT_REST_URL"     usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                 default:"http://vault-obsidian-personal:9090"`
-	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval" env:"REFRESH_INTERVAL" usage:"how often to check the working tree for a new HEAD"                                                                                  default:"30s"`
+	EventVaultName  string           `required:"false" arg:"event-vault-name"    env:"EVENT_VAULT_NAME"    usage:"vault slug stamped on task change events; must equal the controller's VAULT_NAME and the executor's TASK_VAULT. Empty = vault-name."`
+	InstanceStage   string           `required:"false" arg:"instance-stage"      env:"INSTANCE_STAGE"      usage:"stage of this vault-api instance, reported as the instance_stage metric label (dev, prod). Distinct from the per-task stage label."                                      default:""`
+	TasksDir        string           `required:"false" arg:"tasks-dir"           env:"TASKS_DIR"           usage:"task directory inside the vault"                                                                                                                                         default:"25 Tasks"`
+	GoalsDir        string           `required:"false" arg:"goals-dir"           env:"GOALS_DIR"           usage:"goal directory inside the vault"                                                                                                                                         default:"24 Goals"`
+	GatewaySecret   string           `required:"false" arg:"gateway-secret"      env:"GATEWAY_SECRET"      usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                                                                   display:"length"`
+	GitRestURL      string           `required:"false" arg:"git-rest-url"        env:"GIT_REST_URL"        usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                                                     default:"http://vault-obsidian-personal:9090"`
+	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval"    env:"REFRESH_INTERVAL"    usage:"how often to check the working tree for a new HEAD"                                                                                                                      default:"30s"`
 	// StaleAfter bounds both freshness signals /readiness reports on: the index's
 	// own verification and the working tree's last fetch from its remote. It is
 	// ten times the 30s refresh interval, so it tolerates ten missed ticks before
 	// the pod stops reporting ready. Zero disables the rule, which is what a local
 	// run against a tree nothing fetches wants.
-	StaleAfter libtime.Duration `required:"false" arg:"stale-after"      env:"STALE_AFTER"      usage:"how long the index or the tree may go unrefreshed before /readiness answers 503. 0 disables."                                        default:"5m"`
+	StaleAfter libtime.Duration `required:"false" arg:"stale-after"         env:"STALE_AFTER"         usage:"how long the index or the tree may go unrefreshed before /readiness answers 503. 0 disables."                                                                            default:"5m"`
 	// KafkaBrokers enables the change-event producer. Empty disables it, which is
 	// what a local run wants: without a producer the service still serves reads and
 	// writes, it just publishes nothing.
-	KafkaBrokers string `required:"false" arg:"kafka-brokers"    env:"KAFKA_BROKERS"    usage:"Comma separated Kafka brokers for change events. Empty = publishing disabled."`
+	KafkaBrokers string `required:"false" arg:"kafka-brokers"       env:"KAFKA_BROKERS"       usage:"Comma separated Kafka brokers for change events. Empty = publishing disabled."`
 	// TopicPrefix selects the per-cluster topic: the event topic is
 	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID.
-	TopicPrefix string `required:"false" arg:"topic-prefix"     env:"TOPIC_PREFIX"     usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
+	TopicPrefix string `required:"false" arg:"topic-prefix"        env:"TOPIC_PREFIX"        usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
+	// EventBaselinePath persists the last commit whose changes were published.
+	// Empty keeps the baseline process-local, which means a restart adopts the
+	// current HEAD and every commit pushed while the process was down is never
+	// published — silently, since the instance still serves reads and looks
+	// healthy. Set this to a path that survives a pod restart.
+	EventBaselinePath string `required:"false" arg:"event-baseline-path" env:"EVENT_BASELINE_PATH" usage:"file persisting the last published commit so a restart resumes from it. Empty = process-local baseline, which silently skips changes pushed while the process was down."`
 }
 
 // eventVaultName is the vault identity this instance stamps on published task
@@ -116,9 +122,46 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	if err != nil {
 		return err
 	}
+	// A persisted baseline is what lets a restart resume where the previous
+	// process stopped. Without one the feed adopts the current HEAD, and every
+	// commit pushed while the process was down is skipped and never published.
+	baselineStore := vaultapi.NoopBaselineStore()
+	if a.EventBaselinePath != "" {
+		baselineStore = vaultapi.NewFileBaselineStore(a.EventBaselinePath)
+	}
+	initialBaseline, err := baselineStore.Load(ctx)
+	if err != nil {
+		// A baseline that cannot be read is not fatal: falling back to the
+		// process-local behaviour is what the instance did before this seam
+		// existed, and failing startup would take the read API down over it.
+		glog.Warningf("load event baseline failed, adopting current HEAD: %v", err)
+		initialBaseline = ""
+	}
+
+	// A baseline naming a commit this repository no longer holds cannot be diffed,
+	// and that failure is not a broker error, so the feed would retry it forever.
+	// Dropping it here — where adopting HEAD is still the safe fallback — is what
+	// keeps a stale file from wedging publishing.
+	initialBaseline = vaultapi.ResolveBaseline(
+		ctx,
+		vaultapi.NewGitDiffer(a.VaultPath),
+		initialBaseline,
+	)
+
+	// Logged on success as well as on failure: the baseline a restart resumes from
+	// is the only observable that separates a persisted baseline from a
+	// process-local one, and a pod's log is readable where its filesystem is not.
+	// "none" is a literal sentinel rather than an empty string so a reader can
+	// never mistake an absent baseline for a commit.
+	loadedBaseline := "none"
+	if initialBaseline != "" {
+		loadedBaseline = initialBaseline
+	}
+	glog.V(1).Infof("event baseline loaded: %s", loadedBaseline)
+
 	// Always a Feed, even with a nil factory: the no-broker case then still owns a
 	// baseline and simply publishes nothing, so the loop needs no nil checks.
-	feed := vaultapi.NewFeed(factory, publisher.IsPermanent)
+	feed := vaultapi.NewFeedWithBaseline(factory, publisher.IsPermanent, initialBaseline)
 	defer feed.Close()
 
 	writer := gitrest.NewClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
@@ -128,7 +171,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	refs := gitrest.NewRefClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
 
 	return run.CancelOnFirstFinish(ctx,
-		a.refresh(index, store, feed),
+		a.refresh(index, store, feed, baselineStore),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
 			ctx, index, store, a.GatewaySecret, a.VaultPath, a.TasksDir, a.eventVaultName(), writer,
@@ -236,10 +279,15 @@ func (a *application) refresh(
 	index *vaultapi.Index,
 	store storage.PageStorage,
 	feed vaultapi.Feed,
+	baselineStore vaultapi.BaselineStore,
 ) run.Func {
 	return func(ctx context.Context) error {
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
+		// Persist only when the baseline actually moves, so a steady HEAD costs no
+		// write. Seeded empty on purpose: one redundant save at startup is cheaper
+		// than threading the loaded value through and getting the comparison wrong.
+		savedBaseline := ""
 		for {
 			select {
 			case <-ctx.Done():
@@ -260,8 +308,37 @@ func (a *application) refresh(
 				// blocks on an unreachable broker (sarama dials and retries), so
 				// publishing first would stall the index the read path serves for the
 				// whole dial timeout — the coupling this change exists to remove.
-				feed.Advance(ctx, current)
+				//
+				// The returned baseline is persisted only after a batch published, which
+				// is what makes a restart resume from the last published commit instead
+				// of adopting HEAD and skipping everything pushed while the process was
+				// down.
+				next := feed.Advance(ctx, current)
+				persistBaseline(ctx, baselineStore, next, &savedBaseline)
 			}
 		}
 	}
+}
+
+// persistBaseline records the baseline the feed will resume from, and only when it
+// moved: a steady HEAD then costs no write. A save failure is logged rather than
+// returned, because losing persistence degrades to the process-local baseline
+// rather than breaking publishing.
+func persistBaseline(
+	ctx context.Context,
+	store vaultapi.BaselineStore,
+	next string,
+	saved *string,
+) {
+	if next == "" || next == *saved {
+		return
+	}
+	if err := store.Save(ctx, next); err != nil {
+		// saved is left alone deliberately: recording a failed write as saved would
+		// suppress the retry on every later tick, and on a quiescent vault the file
+		// would stay at the previous commit until the baseline moved again.
+		glog.Warningf("persist event baseline failed: %v", err)
+		return
+	}
+	*saved = next
 }
