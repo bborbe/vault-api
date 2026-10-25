@@ -11,6 +11,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	libhttp "github.com/bborbe/http"
@@ -182,7 +184,7 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			Phase:        query.Get("phase"),
 			Goal:         query.Get("goal"),
 			Cluster:      query.Get("cluster"),
-			TaskType:     query.Get("task_type"),
+			TaskTypes:    taskTypeValues(query),
 			ShortID:      query.Get("short_id"),
 			UpdatedSince: updatedSince,
 		})
@@ -193,6 +195,23 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			IndexAgeSeconds: age,
 		})
 	}
+}
+
+// taskTypeValues collects every task_type value a query carries, so a caller can
+// name several in one request — repeated (?task_type=a&task_type=b) or
+// comma-separated (?task_type=a,b). Empty segments are dropped here; a parameter
+// carrying no value at all is refused before this runs.
+func taskTypeValues(query url.Values) []string {
+	var values []string
+	for _, raw := range query["task_type"] {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				values = append(values, part)
+			}
+		}
+	}
+	return values
 }
 
 // parseUpdatedSince reads an RFC3339 bound for the updated_since filter. An
