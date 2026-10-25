@@ -23,6 +23,21 @@ import (
 	"github.com/bborbe/vault-api/pkg/handler"
 )
 
+// countingMetrics records the page reads the storage decorator reports, so a
+// spec can assert that reading a task through the API actually moves the counter
+// a verification run discriminates on.
+type countingMetrics struct {
+	reads int64
+}
+
+func (m *countingMetrics) AddFileReads(kind string, count int64) {
+	if kind == vaultapi.FileReadKindRead {
+		m.reads += count
+	}
+}
+
+func (m *countingMetrics) SetOpenTasks(map[vaultapi.OpenTaskKey]int) {}
+
 var _ = Describe("Task content endpoints", func() {
 	const secret = "test-secret"
 	const contentBody = "## Notes\n\nwritten by the API\n"
@@ -56,7 +71,7 @@ var _ = Describe("Task content endpoints", func() {
 		clock := libtime.NewCurrentDateTime()
 		clock.SetNow(libtime.NewDateTime(2026, 10, 25, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
-			ctx, index, secret, vaultPath, "25 Tasks", "test", writer, clock,
+			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", writer, clock,
 			&recordingPublisher{}, &fakeRefClient{},
 		)
 	})
@@ -190,6 +205,37 @@ var _ = Describe("Task content endpoints", func() {
 				http.MethodPut, "/api/v1/tasks/task-1/content", `{"body":"only this\n"}`,
 			)
 			Expect(decode(recorder)["body"]).To(Equal("only this\n"))
+		})
+	})
+
+	Describe("the read counter", func() {
+		It("moves page_read when a task is read by identifier", func() {
+			// This is the positive control a dev verification discriminates on. A
+			// handler that read the file directly would leave the counter flat and
+			// the criterion nothing to observe, so the read goes through the
+			// counting storage decorator.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			metrics := &countingMetrics{}
+			counting := handler.NewHandler(
+				ctx,
+				index,
+				vaultapi.NewCountingPageStorage(newTestStore(), metrics),
+				secret,
+				vaultPath,
+				"25 Tasks",
+				"test",
+				writer,
+				libtime.NewCurrentDateTime(),
+				&recordingPublisher{},
+				&fakeRefClient{},
+			)
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1", nil)
+			request.Header.Set("X-Gateway-Secret", secret)
+			recorder := httptest.NewRecorder()
+			counting.ServeHTTP(recorder, request)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(metrics.reads).To(BeNumerically(">=", 1))
 		})
 	})
 

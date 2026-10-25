@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,6 +40,7 @@ const publishTimeout = 5 * time.Second
 // turns a landed write into a change event on the task topic.
 type writeDeps struct {
 	index         *vaultapi.Index
+	store         storage.PageStorage
 	vaultPath     string
 	tasksDir      string
 	vault         string
@@ -223,8 +222,11 @@ func loadDocument(
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 		return document{}, false
 	}
-	fullPath := filepath.Join(deps.vaultPath, filepath.FromSlash(item.Path))
-	raw, err := os.ReadFile(fullPath)
+	// The read goes through the page storage rather than the filesystem, so it
+	// increments vault_api_file_reads_total{kind="page_read"}. That counter is the
+	// positive control a verification run discriminates on: a handler that read
+	// the file directly would leave the criterion nothing to observe.
+	page, err := deps.store.ReadPage(ctx, deps.vaultPath, deps.tasksDir, item.Title)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  "read_failed",
@@ -233,6 +235,7 @@ func loadDocument(
 		})
 		return document{}, false
 	}
+	raw := []byte(string(page.Content))
 	frontmatter, err := storage.ParseFrontmatterMap(ctx, raw)
 	if err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{

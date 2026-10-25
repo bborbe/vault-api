@@ -16,6 +16,7 @@ import (
 	libhttp "github.com/bborbe/http"
 	liblog "github.com/bborbe/log"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/vault-cli/pkg/storage"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -37,6 +38,7 @@ import (
 func NewHandler(
 	ctx context.Context,
 	index *vaultapi.Index,
+	store storage.PageStorage,
 	gatewaySecret string,
 	vaultPath string,
 	tasksDir string,
@@ -48,6 +50,7 @@ func NewHandler(
 ) http.Handler {
 	deps := writeDeps{
 		index:         index,
+		store:         store,
 		vaultPath:     vaultPath,
 		tasksDir:      tasksDir,
 		vault:         vaultName,
