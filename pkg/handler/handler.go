@@ -16,6 +16,7 @@ import (
 	libhttp "github.com/bborbe/http"
 	liblog "github.com/bborbe/log"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/vault-cli/pkg/storage"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -37,8 +38,10 @@ import (
 func NewHandler(
 	ctx context.Context,
 	index *vaultapi.Index,
+	store storage.PageStorage,
 	gatewaySecret string,
 	vaultPath string,
+	tasksDir string,
 	vaultName string,
 	writer gitrest.Client,
 	clock libtime.CurrentDateTime,
@@ -47,7 +50,9 @@ func NewHandler(
 ) http.Handler {
 	deps := writeDeps{
 		index:         index,
+		store:         store,
 		vaultPath:     vaultPath,
+		tasksDir:      tasksDir,
 		vault:         vaultName,
 		writer:        writer,
 		clock:         clock,
@@ -67,8 +72,13 @@ func NewHandler(
 	if gatewaySecret != "" {
 		api.Use(gatewaySecretMiddleware(gatewaySecret))
 	}
-	api.Path("/tasks").HandlerFunc(handleListTasks(index))
-	api.Path("/tasks/{id}").HandlerFunc(handleGetTask(index))
+	api.Path("/tasks").Methods(http.MethodGet).HandlerFunc(handleListTasks(index))
+	api.Path("/tasks").Methods(http.MethodPost).HandlerFunc(handleCreateTask(deps))
+	api.Path("/tasks/{id}").Methods(http.MethodGet).HandlerFunc(handleGetTaskDocument(deps))
+	api.Path("/tasks/{id}").Methods(http.MethodPatch).HandlerFunc(handlePatchTask(deps))
+	api.Path("/tasks/{id}/content").
+		Methods(http.MethodPut).
+		HandlerFunc(handlePutTaskContent(deps))
 	api.Path("/tasks/{id}/phase").
 		Methods(http.MethodPatch).
 		HandlerFunc(handlePatchPhase(deps))
@@ -122,15 +132,59 @@ func handleReadiness(index *vaultapi.Index) http.HandlerFunc {
 	}
 }
 
+// taskListFilters is every query parameter GET /api/v1/tasks serves. A parameter
+// outside this set is refused rather than ignored: the handler used to drop what
+// it did not recognise and return every task, so a caller whose filter was
+// misspelled or unsupported read the whole vault as its match set — the exact
+// silent-wrongness this surface exists to remove.
+var taskListFilters = map[string]bool{
+	"assignee":      true,
+	"status":        true,
+	"phase":         true,
+	"goal":          true,
+	"cluster":       true,
+	"task_type":     true,
+	"short_id":      true,
+	"updated_since": true,
+}
+
 func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
+		for name := range query {
+			if !taskListFilters[name] {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":  "unknown_filter",
+					"filter": name,
+				})
+				return
+			}
+			// A declared filter sent with an empty value is refused too. query.Get
+			// cannot tell `?task_type=` from an absent parameter, so treating it as
+			// unset would return the whole vault for a caller who meant to narrow it
+			// — the same silent widening the unknown_filter branch prevents.
+			if query.Get(name) == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":  "invalid_filter",
+					"filter": name,
+					"reason": "a filter must carry a value; omit the parameter to leave it unset",
+				})
+				return
+			}
+		}
+		updatedSince, ok := parseUpdatedSince(w, query.Get("updated_since"))
+		if !ok {
+			return
+		}
 		items, warnings, age := index.QueryTasks(vaultapi.TaskFilter{
-			Assignee: query.Get("assignee"),
-			Status:   query.Get("status"),
-			Phase:    query.Get("phase"),
-			Goal:     query.Get("goal"),
-			Cluster:  query.Get("cluster"),
+			Assignee:     query.Get("assignee"),
+			Status:       query.Get("status"),
+			Phase:        query.Get("phase"),
+			Goal:         query.Get("goal"),
+			Cluster:      query.Get("cluster"),
+			TaskType:     query.Get("task_type"),
+			ShortID:      query.Get("short_id"),
+			UpdatedSince: updatedSince,
 		})
 		writeJSON(w, http.StatusOK, vaultapi.ListResponse[vaultapi.TaskItem]{
 			Items:           items,
@@ -141,24 +195,23 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 	}
 }
 
-func handleGetTask(index *vaultapi.Index) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := mux.Vars(r)["id"]
-		item, found, invalid := index.GetTask(id)
-		if found {
-			writeJSON(w, http.StatusOK, item)
-			return
-		}
-		if invalid != "" {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
-				"error":  "invalid_frontmatter",
-				"reason": invalid,
-				"path":   id,
-			})
-			return
-		}
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+// parseUpdatedSince reads an RFC3339 bound for the updated_since filter. An
+// unparseable value is refused rather than dropped, because a filter that
+// silently disappears returns every task and reads as a successful query.
+func parseUpdatedSince(w http.ResponseWriter, raw string) (*time.Time, bool) {
+	if raw == "" {
+		return nil, true
 	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error":  "invalid_filter",
+			"filter": "updated_since",
+			"reason": "expected an RFC3339 timestamp",
+		})
+		return nil, false
+	}
+	return &parsed, true
 }
 
 func handleListGoals(index *vaultapi.Index) http.HandlerFunc {

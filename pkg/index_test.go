@@ -87,6 +87,40 @@ var _ = Describe("Index", func() {
 		Expect(byGoal).To(HaveLen(1))
 	})
 
+	It("filters by task_type, short_id and updated_since", func() {
+		writeFile(tasksDir, "Alpha", taskFrontmatter(
+			"status: in_progress",
+			"task_type: sentry-deep-analyzer",
+			"short_id: 7811216784",
+		))
+		writeFile(tasksDir, "Bravo", taskFrontmatter(
+			"status: in_progress",
+			"task_type: build-fix",
+		))
+		Expect(index.Build(ctx, store)).To(Succeed())
+
+		byType, _, _ := index.QueryTasks(vaultapi.TaskFilter{TaskType: "sentry-deep-analyzer"})
+		Expect(byType).To(HaveLen(1))
+		Expect(byType[0].Title).To(Equal("Alpha"))
+		Expect(byType[0].ShortID).To(Equal("7811216784"))
+
+		byShortID, _, _ := index.QueryTasks(vaultapi.TaskFilter{ShortID: "7811216784"})
+		Expect(byShortID).To(HaveLen(1))
+
+		past := time.Now().Add(-time.Hour)
+		recent, _, _ := index.QueryTasks(vaultapi.TaskFilter{UpdatedSince: &past})
+		Expect(recent).To(HaveLen(2))
+
+		future := time.Now().Add(time.Hour)
+		none, _, _ := index.QueryTasks(vaultapi.TaskFilter{UpdatedSince: &future})
+		Expect(none).To(BeEmpty())
+
+		// A typed filter matching nothing must return nothing, never fall back to
+		// the whole vault — that fallback is the failure this filter set prevents.
+		missing, _, _ := index.QueryTasks(vaultapi.TaskFilter{TaskType: "no-such-type"})
+		Expect(missing).To(BeEmpty())
+	})
+
 	It("excludes a task with an unknown phase and counts it as a warning", func() {
 		writeFile(tasksDir, "Good", taskFrontmatter("status: next", "phase: planning"))
 		writeFile(tasksDir, "Bad", taskFrontmatter("status: next", "phase: completed"))
