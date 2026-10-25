@@ -157,7 +157,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	if initialBaseline != "" {
 		loadedBaseline = initialBaseline
 	}
-	glog.V(2).Infof("event baseline loaded: %s", loadedBaseline)
+	glog.V(1).Infof("event baseline loaded: %s", loadedBaseline)
 
 	// Always a Feed, even with a nil factory: the no-broker case then still owns a
 	// baseline and simply publishes nothing, so the loop needs no nil checks.
@@ -174,7 +174,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		a.refresh(index, store, feed, baselineStore),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
-			ctx, index, a.GatewaySecret, a.VaultPath, a.eventVaultName(), writer,
+			ctx, index, store, a.GatewaySecret, a.VaultPath, a.TasksDir, a.eventVaultName(), writer,
 			libtime.NewCurrentDateTime(), taskPublisher, refs,
 		)),
 	)
@@ -336,7 +336,11 @@ func persistBaseline(
 		return
 	}
 	if err := store.Save(ctx, next); err != nil {
+		// saved is left alone deliberately: recording a failed write as saved would
+		// suppress the retry on every later tick, and on a quiescent vault the file
+		// would stay at the previous commit until the baseline moved again.
 		glog.Warningf("persist event baseline failed: %v", err)
+		return
 	}
 	*saved = next
 }

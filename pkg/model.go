@@ -4,6 +4,8 @@
 
 package vaultapi
 
+import "time"
+
 // TaskItem is the typed projection of one task page. It is served by
 // GET /api/v1/tasks and GET /api/v1/tasks/{id}.
 type TaskItem struct {
@@ -13,12 +15,26 @@ type TaskItem struct {
 	Status   string   `json:"status"`
 	Phase    string   `json:"phase"`
 	TaskType string   `json:"task_type"`
+	ShortID  string   `json:"short_id,omitempty"`
 	Stage    string   `json:"stage"`
 	Assignee string   `json:"assignee"`
 	Goals    []string `json:"goals"`
 	Cluster  *string  `json:"cluster"`
 	Flag     bool     `json:"flag"`
 	Vault    string   `json:"vault"`
+	// CurrentJob is the task's raw frontmatter current_job — the id of the job
+	// that claimed it, empty when none has. The gauge reports its presence as
+	// job_state; the id itself is served because a reader chasing a stuck record
+	// needs the job, not just the fact of one.
+	CurrentJob string `json:"current_job,omitempty"`
+	// PRState is the task's last observed PR state, written into the frontmatter
+	// by the daily close-obsolete sweep: open, merged, closed or none. Empty means
+	// the sweep has not looked at this record yet.
+	PRState string `json:"pr_state,omitempty"`
+	// UpdatedAt is the page's last-modified time, which is what `updated_since`
+	// filters on. It is a pointer because a page the storage layer reported no
+	// mtime for must be distinguishable from one modified at the zero instant.
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 // GoalItem is the typed projection of one goal page. It is served by
