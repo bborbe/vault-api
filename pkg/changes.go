@@ -126,12 +126,12 @@ func (d *gitDiffer) Exists(ctx context.Context, commit string) (bool, error) {
 	cmd := exec.CommandContext(
 		ctx,
 		"git",
-		"--git-dir", filepath.Join(d.vaultPath, ".git"),
-		"--work-tree", d.vaultPath,
-		"rev-parse",
-		"--verify",
-		"--quiet",
-		commit+"^{commit}",
+		d.baseArgs(
+			"rev-parse",
+			"--verify",
+			"--quiet",
+			commit+"^{commit}",
+		)...,
 	)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -151,22 +151,27 @@ func (d *gitDiffer) Exists(ctx context.Context, commit string) (bool, error) {
 	return true, nil
 }
 
-func (d *gitDiffer) git(ctx context.Context, args ...string) (string, error) {
-	// The vault path is passed explicitly rather than inherited from the process
-	// working directory: the pod's cwd is not the vault, and a bare `git` would
-	// walk up from it and fail or, worse, read another repository.
-	baseArgs := make([]string, 0, 4+len(args))
-	baseArgs = append(
-		baseArgs,
+// baseArgs prefixes every git call with the vault's git-dir and work-tree. The
+// path is passed explicitly rather than inherited from the process working
+// directory: the pod's cwd is not the vault, and a bare `git` would walk up from
+// it and fail or, worse, read another repository.
+func (d *gitDiffer) baseArgs(args ...string) []string {
+	base := make([]string, 0, 4+len(args))
+	base = append(
+		base,
 		"--git-dir",
 		filepath.Join(d.vaultPath, ".git"),
 		"--work-tree",
 		d.vaultPath,
 	)
+	return append(base, args...)
+}
+
+func (d *gitDiffer) git(ctx context.Context, args ...string) (string, error) {
 	// #nosec G204 -- the binary is the literal "git" and every argument is built
 	// here from the configured vault path or from a commit SHA the caller read out
 	// of that same repository. No request value reaches this call.
-	cmd := exec.CommandContext(ctx, "git", append(baseArgs, args...)...)
+	cmd := exec.CommandContext(ctx, "git", d.baseArgs(args...)...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
