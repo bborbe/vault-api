@@ -299,6 +299,46 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(decode(recorder)["filter"]).To(Equal("task_type"))
 		})
 
+		It("refuses a task_type that names no type after splitting", func() {
+			// `?task_type=,` is not empty, so the empty-value check passes it, and it
+			// yields no values — which would apply no filter at all and return the
+			// whole vault.
+			recorder := call(http.MethodGet, "/api/v1/tasks?task_type=,", "")
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_filter"))
+			Expect(decode(recorder)["filter"]).To(Equal("task_type"))
+		})
+
+		It("serves several task_type values, repeated or comma-separated", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\ntask_type: build-fix\n")
+			Expect(os.WriteFile(
+				filepath.Join(tasksDir, "Bravo.md"),
+				[]byte("---\ntask_identifier: task-2\nstatus: in_progress\n"+
+					"task_type: pr-review\n---\nbody\n"),
+				0o600,
+			)).To(Succeed())
+			Expect(index.Build(ctx, store())).To(Succeed())
+
+			for _, query := range []string{
+				"?task_type=build-fix&task_type=pr-review",
+				"?task_type=build-fix,pr-review",
+			} {
+				recorder := call(http.MethodGet, "/api/v1/tasks"+query, "")
+				Expect(recorder.Code).To(Equal(http.StatusOK), query)
+				items, ok := decode(recorder)["items"].([]any)
+				Expect(ok).To(BeTrue(), query)
+				Expect(items).To(HaveLen(2), "%s is a union, not a constraint", query)
+			}
+
+			// The union must still intersect with the other filters — this is the
+			// distinction a per-filter test cannot see.
+			recorder := call(
+				http.MethodGet, "/api/v1/tasks?task_type=build-fix,pr-review&status=completed", "",
+			)
+			items, _ := decode(recorder)["items"].([]any)
+			Expect(items).To(BeEmpty(), "(type in {a,b}) AND status=completed, not an OR")
+		})
+
 		It("refuses an unparseable updated_since rather than dropping it", func() {
 			recorder := call(http.MethodGet, "/api/v1/tasks?updated_since=yesterday", "")
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))

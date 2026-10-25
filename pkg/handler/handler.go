@@ -11,6 +11,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	libhttp "github.com/bborbe/http"
@@ -172,6 +174,19 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 				return
 			}
 		}
+		// A task_type that survives the empty check above but yields no values —
+		// `?task_type=,` or `?task_type=,,` — would otherwise apply no filter at all
+		// and return the whole vault, which is the silent widening the empty check
+		// exists to prevent. Splitting happens here so the refusal can name it.
+		taskTypes := taskTypeValues(query)
+		if _, present := query["task_type"]; present && len(taskTypes) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "invalid_filter",
+				"filter": "task_type",
+				"reason": "a filter must name at least one type; omit the parameter to leave it unset",
+			})
+			return
+		}
 		updatedSince, ok := parseUpdatedSince(w, query.Get("updated_since"))
 		if !ok {
 			return
@@ -182,7 +197,7 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			Phase:        query.Get("phase"),
 			Goal:         query.Get("goal"),
 			Cluster:      query.Get("cluster"),
-			TaskType:     query.Get("task_type"),
+			TaskTypes:    taskTypes,
 			ShortID:      query.Get("short_id"),
 			UpdatedSince: updatedSince,
 		})
@@ -193,6 +208,23 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			IndexAgeSeconds: age,
 		})
 	}
+}
+
+// taskTypeValues collects every task_type value a query carries, so a caller can
+// name several in one request — repeated (?task_type=a&task_type=b) or
+// comma-separated (?task_type=a,b). Empty segments are dropped here; a parameter
+// carrying no value at all is refused before this runs.
+func taskTypeValues(query url.Values) []string {
+	var values []string
+	for _, raw := range query["task_type"] {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				values = append(values, part)
+			}
+		}
+	}
+	return values
 }
 
 // parseUpdatedSince reads an RFC3339 bound for the updated_since filter. An
