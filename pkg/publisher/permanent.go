@@ -17,6 +17,13 @@ import (
 // transient failures forever needs to know which failures are not transient, and
 // the alternative — counting every failure toward an abandonment cap — drops real
 // changes during any outage longer than a few ticks.
+//
+// A sarama ConfigurationError is permanent too, and it is the case that matters
+// most: the producer rejects a message over Producer.MaxMessageBytes locally,
+// before the broker ever sees it, so the error is not a KError and would
+// otherwise be classified transient. One oversized task body would then block
+// every later change forever, because the retry budget is reset on each tick and
+// never reaches the cap that exists to abandon a poison message.
 func IsPermanent(err error) bool {
 	var brokerErr sarama.KError
 	if stderrors.As(err, &brokerErr) {
@@ -27,5 +34,6 @@ func IsPermanent(err error) bool {
 			return true
 		}
 	}
-	return false
+	var configErr sarama.ConfigurationError
+	return stderrors.As(err, &configErr)
 }
