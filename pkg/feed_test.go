@@ -147,7 +147,45 @@ var _ = Describe("Feed", func() {
 		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
 		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
 		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
-		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("ddddddd4"))
+		// Abandoned: the persisted baseline stays before the range while the
+		// publish position moves past it.
+		Expect(feed.Advance(ctx, "ddddddd4")).To(Equal("aaaaaaa1"))
+
+		// Later changes still publish, and they publish from the abandoned head
+		// rather than from the retained baseline — otherwise the poison range would
+		// be retried forever and the stream would never advance again.
+		emitter.err = nil
+		Expect(feed.Advance(ctx, "eeeeeee5")).To(Equal("eeeeeee5"))
+		Expect(emitter.oldHeads).To(Equal(
+			[]string{"aaaaaaa1", "aaaaaaa1", "aaaaaaa1", "ddddddd4"},
+		))
+	})
+
+	It("re-publishes the abandoned range after a reload", func() {
+		// The persisted baseline is what a restart resumes from. Because the
+		// abandonment left it before the range, the reloaded feed re-emits the whole
+		// range instead of starting past it — the difference between retrying a
+		// skipped range and losing it for good.
+		poison := &fakeEmitter{err: errors.New("message too large")}
+		feed := newFeed(poison, nil)
+
+		Expect(feed.Advance(ctx, "aaaaaaa1")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "bbbbbbb2")).To(Equal("aaaaaaa1"))
+		Expect(feed.Advance(ctx, "ccccccc3")).To(Equal("aaaaaaa1"))
+		persisted := feed.Advance(ctx, "ddddddd4")
+		Expect(persisted).To(Equal("aaaaaaa1"))
+
+		reloaded := &fakeEmitter{}
+		replay := vaultapi.NewFeedWithBaseline(
+			func(_ context.Context) (vaultapi.Emitter, func() error, error) {
+				return reloaded, func() error { return nil }, nil
+			},
+			nil,
+			persisted,
+		)
+		Expect(replay.Advance(ctx, "ddddddd4")).To(Equal("ddddddd4"))
+		Expect(reloaded.oldHeads).To(Equal([]string{"aaaaaaa1"}))
+		Expect(reloaded.newHeads).To(Equal([]string{"ddddddd4"}))
 	})
 
 	It("retains the abandoned range in the persisted baseline", func() {
