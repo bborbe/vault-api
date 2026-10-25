@@ -43,6 +43,7 @@ func NewHandler(
 	writer gitrest.Client,
 	clock libtime.CurrentDateTime,
 	taskPublisher publisher.TaskPublisher,
+	refs gitrest.RefClient,
 ) http.Handler {
 	deps := writeDeps{
 		index:         index,
@@ -82,6 +83,30 @@ func NewHandler(
 		HandlerFunc(handleMerge(deps))
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
+
+	// Claims are addressed by the object they are held on — a task identifier or
+	// a repository — never by a vault path. The transport under them is git-rest's
+	// claim refs; a caller never sees that vocabulary.
+	claimDeps := ClaimDeps{Refs: refs, Clock: clock}
+	taskScope := TaskClaimScope(index)
+	api.Path("/tasks/{id}/claim").Methods(http.MethodPost).
+		HandlerFunc(AcquireClaimHandler(claimDeps, taskScope))
+	api.Path("/tasks/{id}/claim/renew").Methods(http.MethodPost).
+		HandlerFunc(RenewClaimHandler(claimDeps, taskScope))
+	api.Path("/tasks/{id}/claim").Methods(http.MethodDelete).
+		HandlerFunc(ReleaseClaimHandler(claimDeps, taskScope))
+	api.Path("/tasks/{id}/claim").Methods(http.MethodGet).
+		HandlerFunc(ReadClaimHandler(claimDeps, taskScope))
+
+	repoScope := RepoClaimScope()
+	api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodPost).
+		HandlerFunc(AcquireClaimHandler(claimDeps, repoScope))
+	api.Path("/repos/{owner}/{repo}/claim/renew").Methods(http.MethodPost).
+		HandlerFunc(RenewClaimHandler(claimDeps, repoScope))
+	api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodDelete).
+		HandlerFunc(ReleaseClaimHandler(claimDeps, repoScope))
+	api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodGet).
+		HandlerFunc(ReadClaimHandler(claimDeps, repoScope))
 
 	return router
 }
