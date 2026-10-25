@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	stderrors "errors"
 	"net/http"
@@ -22,10 +23,15 @@ import (
 // § 10, not a value chosen here.
 const DefaultLeaseSeconds = 300
 
-// RenewLeadSeconds is how long before expiry a holder should renew. The design
-// fixes renewal at 60 s, so the response states the instant rather than leaving
-// the caller to re-derive it.
+// RenewLeadSeconds is how long before expiry a holder should renew. The response
+// states the instant rather than leaving the caller to re-derive it.
 const RenewLeadSeconds = 60
+
+// MaxLeaseSeconds bounds a requested lease. The bound exists because
+// time.Duration(ttl) * time.Second overflows int64 nanoseconds above ~9.2e9 s,
+// and an overflowed lease renders lease_until in the past — a claim that is
+// expired the moment it is taken. A day is longer than any run needs.
+const MaxLeaseSeconds = 86400
 
 // claimBodyLimit bounds the accepted claim request body. A claim body is three
 // short strings; anything larger is a mistake, not a claim.
@@ -126,6 +132,39 @@ func RepoClaimScope() func(*http.Request) (ClaimScope, bool) {
 	}
 }
 
+// exactClaim finds the claim for key among a prefix listing. git-rest answers a
+// prefix match, so claims/task/task-1 also lists claims/task/task-10; only the
+// exact ref is this object's claim.
+func exactClaim(refs []gitrest.ClaimRef, key string) (gitrest.ClaimRef, bool) {
+	for _, ref := range refs {
+		if ref.Ref == "refs/"+key {
+			return ref, true
+		}
+	}
+	return gitrest.ClaimRef{}, false
+}
+
+// leaseExpired reports whether a stored lease_until has passed. An unparsable
+// lease counts as expired: the ref carries no trustworthy expiry, and the
+// alternative is a key nothing can claim again.
+func leaseExpired(leaseUntil string, now time.Time) bool {
+	until, err := time.Parse(time.RFC3339, leaseUntil)
+	if err != nil {
+		return true
+	}
+	return !until.After(now)
+}
+
+// renewBefore states when a holder should renew, or "" when the stored lease is
+// unparsable and no instant can be derived from it.
+func renewBefore(leaseUntil string) string {
+	until, err := time.Parse(time.RFC3339, leaseUntil)
+	if err != nil {
+		return ""
+	}
+	return until.Add(-RenewLeadSeconds * time.Second).Format(time.RFC3339)
+}
+
 // AcquireClaimHandler takes a claim. A conflict means another holder has it and
 // answers 409 claim_held with the holder that won.
 func AcquireClaimHandler(
@@ -158,33 +197,13 @@ func claimWriteHandler(
 			return
 		}
 
-		var request claimRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, claimBodyLimit)).Decode(&request); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
+		request, ok := readClaimRequest(w, r, renew)
+		if !ok {
 			return
 		}
-		if request.Holder == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_holder"})
+		transportTaskID, ok := claimTransportTaskID(w, claimed, request)
+		if !ok {
 			return
-		}
-		if request.TTLSeconds < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_ttl"})
-			return
-		}
-		if renew && request.LeaseToken == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_lease_token"})
-			return
-		}
-
-		// A repository has no task of its own, so the claiming run supplies one.
-		// A task claim always uses the addressed task, never a caller-supplied id.
-		transportTaskID := claimed.ID
-		if claimed.Scope == "repo" {
-			transportTaskID = request.TaskID
-			if transportTaskID == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_task_id"})
-				return
-			}
 		}
 
 		ttl := request.TTLSeconds
@@ -194,8 +213,30 @@ func claimWriteHandler(
 		now := deps.Clock.Now().Time().UTC()
 		leaseUntil := now.Add(time.Duration(ttl) * time.Second)
 
+		expectedSHA := request.LeaseToken
+		if !renew {
+			sha, held, err := acquireToken(r.Context(), deps.Refs, claimed.Key, now)
+			if err != nil {
+				writeJSON(
+					w,
+					http.StatusInternalServerError,
+					map[string]string{"error": "claim_read_failed"},
+				)
+				return
+			}
+			if held != nil {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":       "claim_held",
+					"holder":      held.Cluster,
+					"lease_until": held.LeaseUntil,
+				})
+				return
+			}
+			expectedSHA = sha
+		}
+
 		ref, err := deps.Refs.PutClaimRef(r.Context(), claimed.Key, gitrest.ClaimRefRequest{
-			ExpectedSHA: request.LeaseToken,
+			ExpectedSHA: expectedSHA,
 			Cluster:     request.Holder,
 			TaskID:      transportTaskID,
 			LeaseUntil:  leaseUntil.Format(time.RFC3339),
@@ -205,7 +246,12 @@ func claimWriteHandler(
 			return
 		}
 
-		writeJSON(w, http.StatusCreated, claimResponse{
+		status := http.StatusCreated
+		if renew {
+			// The claim already existed; renewing it creates nothing.
+			status = http.StatusOK
+		}
+		writeJSON(w, status, claimResponse{
 			Scope:       claimed.Scope,
 			ID:          claimed.ID,
 			Holder:      request.Holder,
@@ -214,6 +260,91 @@ func claimWriteHandler(
 			LeaseToken:  ref.SHA,
 		})
 	}
+}
+
+// readClaimRequest decodes and validates the typed claim body, answering the
+// request itself when it is unusable. ok is false once a response is written.
+func readClaimRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	renew bool,
+) (claimRequest, bool) {
+	var request claimRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, claimBodyLimit))
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
+		return claimRequest{}, false
+	}
+	code := claimRequestError(request, renew)
+	if code != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": code})
+		return claimRequest{}, false
+	}
+	return request, true
+}
+
+// claimRequestError names what is wrong with the body, or "" when nothing is.
+func claimRequestError(request claimRequest, renew bool) string {
+	switch {
+	case request.Holder == "":
+		return "invalid_holder"
+	case request.TTLSeconds < 0 || request.TTLSeconds > MaxLeaseSeconds:
+		return "invalid_ttl"
+	case renew && request.LeaseToken == "":
+		return "missing_lease_token"
+	case !renew && request.LeaseToken != "":
+		// Acquire starts from nothing. A token here would make the call a renew
+		// with the wrong error vocabulary for a lost race.
+		return "unexpected_lease_token"
+	}
+	return ""
+}
+
+// claimTransportTaskID is the task id the transport requires on every ref write.
+// A task claim uses the addressed task, never a caller-supplied id; a repository
+// has no task of its own, so the claiming run supplies one.
+func claimTransportTaskID(
+	w http.ResponseWriter,
+	claimed ClaimScope,
+	request claimRequest,
+) (string, bool) {
+	if claimed.Scope != "repo" {
+		return claimed.ID, true
+	}
+	if request.TaskID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_task_id"})
+		return "", false
+	}
+	return request.TaskID, true
+}
+
+// acquireToken returns the compare-and-swap token an acquire must carry. held is
+// the live claim that blocks it, or nil when the key is free — or when its lease
+// has passed, in which case the token is the expired ref's own SHA and the
+// acquire takes the claim over.
+func acquireToken(
+	ctx context.Context,
+	refs gitrest.RefClient,
+	key string,
+	now time.Time,
+) (string, *gitrest.ClaimRef, error) {
+	current, err := refs.ListClaimRefs(ctx, key)
+	if err != nil {
+		return "", nil, err
+	}
+	ref, held := exactClaim(current, key)
+	if !held {
+		return "", nil, nil
+	}
+	if !leaseExpired(ref.LeaseUntil, now) {
+		return "", &ref, nil
+	}
+	// An expired claim is free. git-rest stores lease_until and never compares
+	// it, so without this takeover a holder that died would block the key
+	// forever: every later acquire would lose the compare-and-swap and answer
+	// 409 to a claim nobody holds. Carrying the expired ref's own SHA keeps
+	// exactly one of several concurrent acquirers the winner.
+	return ref.SHA, nil, nil
 }
 
 // ReleaseClaimHandler releases a claim. The token is mandatory: releasing
@@ -268,20 +399,19 @@ func ReadClaimHandler(
 			)
 			return
 		}
-		for _, ref := range refs {
-			if ref.Ref != "refs/"+claimed.Key {
-				continue
-			}
-			writeJSON(w, http.StatusOK, claimResponse{
-				Scope:      claimed.Scope,
-				ID:         claimed.ID,
-				Holder:     ref.Cluster,
-				LeaseUntil: ref.LeaseUntil,
-				LeaseToken: ref.SHA,
-			})
+		ref, held := exactClaim(refs, claimed.Key)
+		if !held {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "claim_free"})
 			return
 		}
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "claim_free"})
+		writeJSON(w, http.StatusOK, claimResponse{
+			Scope:       claimed.Scope,
+			ID:          claimed.ID,
+			Holder:      ref.Cluster,
+			LeaseUntil:  ref.LeaseUntil,
+			RenewBefore: renewBefore(ref.LeaseUntil),
+			LeaseToken:  ref.SHA,
+		})
 	}
 }
 
@@ -295,6 +425,14 @@ func writeClaimError(w http.ResponseWriter, err error, renew bool) {
 			code = "lease_lost"
 		}
 		writeJSON(w, http.StatusConflict, map[string]string{"error": code})
+		return
+	}
+	// A 4xx from git-rest is this caller's mistake — a ref name it refused, a
+	// body it rejected — and answering 500 would tell the client to retry a
+	// request that can never succeed.
+	var statusErr *gitrest.StatusError
+	if stderrors.As(err, &statusErr) && statusErr.StatusCode >= 400 && statusErr.StatusCode < 500 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_claim"})
 		return
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "claim_write_failed"})

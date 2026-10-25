@@ -161,6 +161,48 @@ var _ = Describe("Claim handlers", func() {
 			Expect(decode()["error"]).To(Equal("claim_held"))
 		})
 
+		It("answers 409 naming the holder when a live claim is already held", func() {
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-1",
+				SHA:        "held-sha",
+				Cluster:    "sun",
+				LeaseUntil: "2026-10-25T12:04:59Z",
+			}}
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			Expect(decode()["error"]).To(Equal("claim_held"))
+			Expect(decode()["holder"]).To(Equal("sun"))
+			Expect(decode()["lease_until"]).To(Equal("2026-10-25T12:04:59Z"))
+			Expect(refs.lastPut.Cluster).To(BeEmpty(), "a live claim must not be written over")
+		})
+
+		It("takes over a claim whose lease has expired", func() {
+			// git-rest stores lease_until and never compares it, so without this
+			// takeover a dead holder would block the key forever.
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-1",
+				SHA:        "expired-sha",
+				Cluster:    "sun",
+				LeaseUntil: "2026-10-25T11:00:00Z",
+			}}
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastPut.ExpectedSHA).To(Equal("expired-sha"))
+			Expect(decode()["holder"]).To(Equal("nukedev"))
+		})
+
+		It("answers 400 for a ttl above the bound", func() {
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev","ttl_seconds":86401}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("invalid_ttl"))
+		})
+
+		It("answers 400 when acquire carries a lease token", func() {
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev","lease_token":"tok"}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("unexpected_lease_token"))
+		})
+
 		It("answers 400 when the holder is missing", func() {
 			post("/api/v1/tasks/task-1/claim", `{}`)
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
@@ -178,7 +220,7 @@ var _ = Describe("Claim handlers", func() {
 	Describe("renew", func() {
 		It("extends the lease using the token as the compare-and-swap", func() {
 			post("/api/v1/tasks/task-1/claim/renew", `{"holder":"nukedev","lease_token":"tok"}`)
-			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(recorder.Code).To(Equal(http.StatusOK), "renewing creates nothing")
 			Expect(refs.lastPut.ExpectedSHA).To(Equal("tok"))
 		})
 
@@ -235,6 +277,7 @@ var _ = Describe("Claim handlers", func() {
 			body := decode()
 			Expect(body["holder"]).To(Equal("sun"))
 			Expect(body["lease_token"]).To(Equal("abc"))
+			Expect(body["renew_before"]).To(Equal("2026-10-25T12:04:00Z"))
 		})
 
 		It("answers 404 claim_free when nobody holds it", func() {
