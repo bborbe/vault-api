@@ -87,7 +87,7 @@ func NewHandler(
 	// Claims are addressed by the object they are held on — a task identifier or
 	// a repository — never by a vault path. The transport under them is git-rest's
 	// claim refs; a caller never sees that vocabulary.
-	claimDeps := ClaimDeps{Index: index, Refs: refs, Clock: clock}
+	claimDeps := ClaimDeps{Refs: refs, Clock: clock}
 	taskScope := TaskClaimScope(index)
 	api.Path("/tasks/{id}/claim").Methods(http.MethodPost).
 		HandlerFunc(AcquireClaimHandler(claimDeps, taskScope))

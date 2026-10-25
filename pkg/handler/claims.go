@@ -19,9 +19,10 @@ import (
 	"github.com/bborbe/vault-api/pkg/gitrest"
 )
 
-// DefaultLeaseSeconds is the lease a claim gets when the caller names none. It
-// is the 5-minute lease settled on 2026-10-21 and carried over from the design's
-// § 10, not a value chosen here.
+// DefaultLeaseSeconds is the lease a claim gets when the caller names none. Five
+// minutes is long enough that a working run renews once rather than continuously,
+// and short enough that a run that died frees its key quickly instead of blocking
+// it until someone notices.
 const DefaultLeaseSeconds = 300
 
 // RenewLeadSeconds is how long before expiry a holder should renew. The response
@@ -42,7 +43,6 @@ const claimBodyLimit = 64 * 1024
 // the ref client that carries the claim to git-rest, and an injected clock so a
 // lease instant is computed from a supplied time rather than the wall clock.
 type ClaimDeps struct {
-	Index *vaultapi.Index
 	Refs  gitrest.RefClient
 	Clock libtime.CurrentDateTime
 }
@@ -283,6 +283,23 @@ func claimWriteHandler(
 	}
 }
 
+// decodeClaimRequest decodes the typed claim body, answering the request itself
+// when it is unusable. ok is false once a response has been written.
+//
+// Unknown fields are refused rather than ignored. Ignoring them makes a
+// misspelled key silent: a caller sending ttl_second instead of ttl_seconds
+// would get the default lease and no indication that its value was dropped.
+func decodeClaimRequest(w http.ResponseWriter, r *http.Request) (claimRequest, bool) {
+	var request claimRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, claimBodyLimit))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
+		return claimRequest{}, false
+	}
+	return request, true
+}
+
 // readClaimRequest decodes and validates the typed claim body, answering the
 // request itself when it is unusable. ok is false once a response is written.
 func readClaimRequest(
@@ -290,10 +307,8 @@ func readClaimRequest(
 	r *http.Request,
 	renew bool,
 ) (claimRequest, bool) {
-	var request claimRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, claimBodyLimit))
-	if err := decoder.Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
+	request, ok := decodeClaimRequest(w, r)
+	if !ok {
 		return claimRequest{}, false
 	}
 	code := claimRequestError(request, renew)
@@ -382,9 +397,8 @@ func ReleaseClaimHandler(
 			return
 		}
 
-		var request claimRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, claimBodyLimit)).Decode(&request); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
+		request, ok := decodeClaimRequest(w, r)
+		if !ok {
 			return
 		}
 		if request.LeaseToken == "" {

@@ -92,7 +92,7 @@ var _ = Describe("Claim handlers", func() {
 	}
 
 	buildRouter := func(scope func(*http.Request) (handler.ClaimScope, bool)) *mux.Router {
-		deps := handler.ClaimDeps{Index: nil, Refs: refs, Clock: clock}
+		deps := handler.ClaimDeps{Refs: refs, Clock: clock}
 		r := mux.NewRouter()
 		api := r.PathPrefix("/api/v1").Subrouter()
 		api.Path("/tasks/{id}/claim").Methods(http.MethodPost).
@@ -246,6 +246,32 @@ var _ = Describe("Claim handlers", func() {
 			post("/api/v1/tasks/task-1/claim", `{}`)
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
 			Expect(decode()["error"]).To(Equal("invalid_holder"))
+		})
+
+		It("refuses an unknown field instead of silently ignoring it", func() {
+			// A misspelled key would otherwise fall back to the default lease
+			// while the caller believes it set one.
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev","ttl_second":60}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("invalid_body"))
+			Expect(refs.lastPut.Cluster).To(BeEmpty(), "a refused body must not be written")
+		})
+
+		It("ignores a sibling key that shares the requested key as a prefix", func() {
+			// git-rest matches the listing by prefix, so an acquire on task-1 can
+			// come back holding task-10's ref. Reading that as a live claim would
+			// answer 409 for a key nobody holds.
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-10",
+				SHA:        "sibling-sha",
+				Cluster:    "sun",
+				LeaseUntil: "2026-10-25T12:04:59Z",
+			}}
+			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(
+				refs.lastPut.ExpectedSHA,
+			).To(BeEmpty(), "a sibling key is not a lease to take over")
 		})
 
 		It("answers 404 when the addressed object does not exist", func() {
