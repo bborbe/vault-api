@@ -196,14 +196,15 @@ var _ = Describe("Index", func() {
 		writeFile(tasksDir, "Iota", taskFrontmatter("status: in_progress", "task_type: pr-review"))
 		Expect(index.Build(ctx, store)).To(Succeed())
 
-		// completed and aborted are excluded; a task with no stage, no task_type
-		// or no status line still counts as open, under the matching unknown bucket.
+		// completed and aborted are excluded; a task with no stage, no task_type,
+		// no phase or no status line still counts as open, under the matching
+		// unknown bucket. Eta carries phase: execution and no status line.
 		Expect(metrics.openTasks).To(Equal(map[vaultapi.OpenTaskKey]int{
-			{Stage: "prod", TaskType: "pr-review"}:     2, // Alpha, Beta
-			{Stage: "prod", TaskType: "unknown"}:       1, // Zeta — no task_type
-			{Stage: "dev", TaskType: "github-release"}: 1, // Epsilon
-			{Stage: "dev", TaskType: "pr-review"}:      1, // Eta — no status line
-			{Stage: "unknown", TaskType: "pr-review"}:  2, // Theta empty stage, Iota missing
+			{Stage: "prod", TaskType: "pr-review", Phase: "unknown"}:     2, // Alpha, Beta
+			{Stage: "prod", TaskType: "unknown", Phase: "unknown"}:       1, // Zeta — no task_type
+			{Stage: "dev", TaskType: "github-release", Phase: "unknown"}: 1, // Epsilon
+			{Stage: "dev", TaskType: "pr-review", Phase: "execution"}:    1, // Eta — no status line
+			{Stage: "unknown", TaskType: "pr-review", Phase: "unknown"}:  2, // Theta empty stage, Iota missing
 		}))
 		Expect(metrics.setCalls).To(Equal(1))
 	})
