@@ -206,10 +206,7 @@ func claimWriteHandler(
 			return
 		}
 
-		ttl := request.TTLSeconds
-		if ttl == 0 {
-			ttl = DefaultLeaseSeconds
-		}
+		ttl := claimLeaseSeconds(request.TTLSeconds)
 		now := deps.Clock.Now().Time().UTC()
 		leaseUntil := now.Add(time.Duration(ttl) * time.Second)
 
@@ -242,16 +239,11 @@ func claimWriteHandler(
 			LeaseUntil:  leaseUntil.Format(time.RFC3339),
 		})
 		if err != nil {
-			writeClaimError(w, err, renew)
+			writeClaimWriteError(r.Context(), w, err, renew, deps.Refs, claimed.Key)
 			return
 		}
 
-		status := http.StatusCreated
-		if renew {
-			// The claim already existed; renewing it creates nothing.
-			status = http.StatusOK
-		}
-		writeJSON(w, status, claimResponse{
+		writeJSON(w, claimWriteStatus(renew), claimResponse{
 			Scope:       claimed.Scope,
 			ID:          claimed.ID,
 			Holder:      request.Holder,
@@ -413,6 +405,61 @@ func ReadClaimHandler(
 			LeaseToken:  ref.SHA,
 		})
 	}
+}
+
+// claimLeaseSeconds is the requested lease, or the default when the caller names
+// none.
+func claimLeaseSeconds(ttl int) int {
+	if ttl == 0 {
+		return DefaultLeaseSeconds
+	}
+	return ttl
+}
+
+// claimWriteStatus is 201 for an acquire and 200 for a renew — renewing a claim
+// creates nothing.
+func claimWriteStatus(renew bool) int {
+	if renew {
+		return http.StatusOK
+	}
+	return http.StatusCreated
+}
+
+// writeClaimWriteError answers a failed claim write. An acquire that lost the
+// compare-and-swap is the one failure whose answer names the winner.
+func writeClaimWriteError(
+	ctx context.Context,
+	w http.ResponseWriter,
+	err error,
+	renew bool,
+	refs gitrest.RefClient,
+	key string,
+) {
+	if !renew && stderrors.Is(err, gitrest.ErrClaimConflict) {
+		writeAcquireConflict(ctx, w, refs, key)
+		return
+	}
+	writeClaimError(w, err, renew)
+}
+
+// writeAcquireConflict answers an acquire whose compare-and-swap lost, naming
+// the holder that won when the claim is readable. The re-read can still find
+// nothing — the winner may have released in between — so the bare code remains a
+// legal answer, and the caller's reaction is the same either way.
+func writeAcquireConflict(
+	ctx context.Context,
+	w http.ResponseWriter,
+	refs gitrest.RefClient,
+	key string,
+) {
+	body := map[string]string{"error": "claim_held"}
+	if current, err := refs.ListClaimRefs(ctx, key); err == nil {
+		if ref, held := exactClaim(current, key); held {
+			body["holder"] = ref.Cluster
+			body["lease_until"] = ref.LeaseUntil
+		}
+	}
+	writeJSON(w, http.StatusConflict, body)
 }
 
 // writeClaimError maps a transport failure onto the typed error vocabulary. A
