@@ -54,6 +54,7 @@ var _ = Describe("Merge endpoint", func() {
 		router = handler.NewHandler(
 			ctx, index, secret, vaultPath, "test", writer,
 			libtime.NewCurrentDateTime(), &recordingPublisher{},
+			&fakeRefClient{},
 		)
 	})
 
@@ -276,6 +277,7 @@ var _ = Describe("Merge endpoint", func() {
 		openRouter := handler.NewHandler(
 			ctx, index, "", vaultPath, "test", writer,
 			libtime.NewCurrentDateTime(), &recordingPublisher{},
+			&fakeRefClient{},
 		)
 		encoded, err := json.Marshal(map[string]any{
 			"path":   "25 Tasks/Alpha.md",
