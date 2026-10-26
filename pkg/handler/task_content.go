@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
+	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/rules"
 )
 
@@ -28,6 +30,10 @@ type TaskDocument struct {
 	Title       string         `json:"title"`
 	Frontmatter map[string]any `json:"frontmatter"`
 	Body        string         `json:"body"`
+	// Reopened marks a create that replaced a terminal occupant rather than
+	// writing a free path. Absent on every ordinary create, so a caller that
+	// ignores it is unaffected and one that logs it can record the reopen.
+	Reopened bool `json:"reopened,omitempty"`
 }
 
 // contentRequest is the body of PUT /api/v1/tasks/{id}/content. It carries the
@@ -43,11 +49,20 @@ type contentRequest struct {
 
 // createRequest is the body of POST /api/v1/tasks. The caller supplies the
 // title; the server owns the filename, the directory and the serialisation.
+//
+// Reopen is opt-in and names the only case it covers: "terminal". Absent or any
+// other value keeps the route's original behaviour, where any occupant is a
+// conflict, so no existing caller changes. See reopenTerminal.
 type createRequest struct {
 	Title       string         `json:"title"`
 	Frontmatter map[string]any `json:"frontmatter"`
 	Body        string         `json:"body"`
+	Reopen      string         `json:"reopen,omitempty"`
 }
+
+// reopenTerminal is the only accepted value of createRequest.Reopen: replace a
+// task whose status is terminal, and refuse every other occupant.
+const reopenTerminal = "terminal"
 
 // typedTaskFields is the frontmatter a PATCH may name. It is an allowlist rather
 // than a denylist because the alternative — accept anything the caller sends —
@@ -122,6 +137,65 @@ func handlePatchTask(deps writeDeps) http.HandlerFunc {
 		if !document.persist(ctx, w, deps) {
 			return
 		}
+		writeJSON(w, http.StatusOK, document.view())
+	}
+}
+
+// readdressRequest is the body of POST /api/v1/tasks/{id}/readdress.
+type readdressRequest struct {
+	TaskIdentifier string `json:"task_identifier"`
+}
+
+// handleReaddressTask serves POST /api/v1/tasks/{id}/readdress: the task's
+// task_identifier changes and the file does not move.
+//
+// It exists because PATCH refuses task_identifier by design — *"only a create may
+// name it: a PATCH that changed it would break the addressing the API rests on"*
+// — and the controller's planning-retry mints a new identifier on every retry,
+// because a retry is a fresh attempt rather than a continuation. That intent is
+// legitimate, so it gets its own verb: one auditable operation that says "this
+// task is now addressed differently", instead of smuggling the change through an
+// ordinary field write.
+//
+// ⚠️ The cost is real and is not hidden: the old identifier stops resolving for
+// every caller holding it. The refusal when the target identifier is already
+// taken is therefore mandatory, not defensive — silently merging two tasks into
+// one address is the worst outcome available here.
+func handleReaddressTask(deps writeDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		var request readdressRequest
+		if !decodeBody(w, r, &request) {
+			return
+		}
+		next := strings.TrimSpace(request.TaskIdentifier)
+		if next == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid_task_identifier",
+			})
+			return
+		}
+		document, ok := loadDocument(ctx, w, deps, mux.Vars(r)["id"])
+		if !ok {
+			return
+		}
+		if occupant, found, _ := deps.index.GetTask(next); found {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":           "task_exists",
+				"id":              occupant.Title,
+				"task_identifier": occupant.ID,
+				"status":          occupant.Status,
+			})
+			return
+		}
+		document.set("task_identifier", next)
+		if !document.persist(ctx, w, deps) {
+			return
+		}
+		// view() renders ID from the indexed item, not from the frontmatter, so a
+		// re-address that only mutated the frontmatter would answer under the OLD
+		// address — the one thing a caller must not be told after moving the task.
+		document.item.ID = next
 		writeJSON(w, http.StatusOK, document.view())
 	}
 }
@@ -298,11 +372,25 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 		}
 		path := filepath.ToSlash(filepath.Join(deps.tasksDir, title+".md"))
 		if _, err := os.Stat(filepath.Join(deps.vaultPath, filepath.FromSlash(path))); err == nil {
-			writeJSON(w, http.StatusConflict, map[string]string{
-				"error": "task_exists",
-				"id":    title,
-				"path":  path,
-			})
+			// The title path is occupied, and the right answer depends on the
+			// occupant — so the refusal names it. It used to answer with `id: title`,
+			// which is the address the caller had just sent: the caller learned
+			// nothing it did not already know, and could not tell "same task,
+			// terminal, reopen" from "different task, disambiguate the title"
+			// without a second read it had no address for.
+			occupant, found, _ := deps.index.GetTask(title)
+			if !found || request.Reopen != reopenTerminal {
+				writeTaskExists(w, path, occupant, found)
+				return
+			}
+			if !vaultapi.IsTerminalStatus(occupant.Status) {
+				// A live occupant holds the path. Reopening one would let two
+				// attempts share an identity, which is the collision the vault's
+				// terminal-status rule exists to prevent.
+				writeTaskExists(w, path, occupant, true)
+				return
+			}
+			reopenTerminalTask(ctx, w, deps, request, path)
 			return
 		}
 		frontmatter, ok := prepareCreateFrontmatter(w, deps, request.Frontmatter, path)
@@ -333,6 +421,74 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			Body:        request.Body,
 		})
 	}
+}
+
+// writeTaskExists answers a create that collided, naming the occupant rather than
+// echoing the title the caller sent. `id` keeps its original meaning — the title —
+// so an existing caller reading it is unaffected; task_identifier and status are
+// additive, and they are what let a caller decide reopen-versus-disambiguate
+// without a second read it has no address for.
+func writeTaskExists(
+	w http.ResponseWriter,
+	path string,
+	occupant vaultapi.TaskItem,
+	found bool,
+) {
+	payload := map[string]string{
+		"error": "task_exists",
+		"id":    strings.TrimSuffix(filepath.Base(path), ".md"),
+		"path":  path,
+	}
+	if found {
+		payload["task_identifier"] = occupant.ID
+		payload["status"] = occupant.Status
+	}
+	writeJSON(w, http.StatusConflict, payload)
+}
+
+// reopenTerminal replaces a task whose status is terminal with the request's own
+// frontmatter and body.
+//
+// ⚠️ It REPLACES rather than merges, and that is the whole reason this is a mode
+// on create rather than a read-then-PATCH: PATCH merges an allowlist, so a
+// reopened task would keep the previous attempt's completed_date, recovery_sha,
+// superseded_by and terminal phase. That is not a reopen, it is a live task
+// wearing a dead task's history.
+func reopenTerminalTask(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps writeDeps,
+	request createRequest,
+	path string,
+) {
+	frontmatter, ok := prepareCreateFrontmatter(w, deps, request.Frontmatter, path)
+	if !ok {
+		return
+	}
+	head, err := storage.SerializeFrontmatter(ctx, frontmatter, "")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":  "render_failed",
+			"reason": err.Error(),
+		})
+		return
+	}
+	rendered := head + "\n" + request.Body
+	if err := deps.writer.WriteFile(ctx, path, []byte(rendered)); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error":  "git_rest_failed",
+			"reason": err.Error(),
+			"path":   path,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, TaskDocument{
+		ID:          fmt.Sprint(frontmatter["task_identifier"]),
+		Title:       strings.TrimSpace(request.Title),
+		Frontmatter: frontmatter,
+		Body:        request.Body,
+		Reopened:    true,
+	})
 }
 
 // prepareCreateFrontmatter validates the caller's frontmatter and returns it
