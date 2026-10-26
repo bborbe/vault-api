@@ -132,6 +132,19 @@ func registerClaimRoutes(api *mux.Router, claimDeps ClaimDeps, index *vaultapi.I
 		HandlerFunc(ReleaseClaimHandler(claimDeps, repoScope))
 	api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodGet).
 		HandlerFunc(ReadClaimHandler(claimDeps, repoScope))
+
+	// A per-PR claim narrows the lock from the repository to one pull request,
+	// so two reviews of the same repository can run at once. The executor holds
+	// this claim alongside the repository one and recovers the pair by task id.
+	prScope := PRClaimScope()
+	api.Path("/repos/{owner}/{repo}/pulls/{number}/claim").Methods(http.MethodPost).
+		HandlerFunc(AcquireClaimHandler(claimDeps, prScope))
+	api.Path("/repos/{owner}/{repo}/pulls/{number}/claim/renew").Methods(http.MethodPost).
+		HandlerFunc(RenewClaimHandler(claimDeps, prScope))
+	api.Path("/repos/{owner}/{repo}/pulls/{number}/claim").Methods(http.MethodDelete).
+		HandlerFunc(ReleaseClaimHandler(claimDeps, prScope))
+	api.Path("/repos/{owner}/{repo}/pulls/{number}/claim").Methods(http.MethodGet).
+		HandlerFunc(ReadClaimHandler(claimDeps, prScope))
 }
 
 func handleReadiness(index *vaultapi.Index) http.HandlerFunc {

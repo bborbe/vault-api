@@ -13,6 +13,7 @@ Typed read API over an Obsidian vault working tree. It serves typed tasks and go
 | `GET /api/v1/claims` | List claims; filter `holder` |
 | `GET/POST/DELETE /api/v1/tasks/{id}/claim` | Read, acquire or release a task claim |
 | `GET/POST/DELETE /api/v1/repos/{owner}/{repo}/claim` | Read, acquire or release a repository claim |
+| `GET/POST/DELETE /api/v1/repos/{owner}/{repo}/pulls/{number}/claim` | Read, acquire or release a per-pull-request claim |
 | `GET /readiness` | 200 with `vault`, `index_age_seconds`, `tree_age_seconds`, `head`, `warnings`; 503 until the first index build, and again whenever either freshness signal leaves `--stale-after` |
 | `GET /healthz`, `/metrics`, `/setloglevel/{level}`, `/gc` | Fleet admin endpoints |
 
