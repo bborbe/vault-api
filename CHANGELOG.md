@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.20.0
 
 - feat: Add an `assignee` label to `vault_api_open_tasks`, so an owned record is distinguishable from an abandoned one at the same phase. The gauge carried stage, task_type, phase, job_state and pr_state but not who owns the task, so two records in identical states were indistinguishable and the unowned one — the one that needs a human — could not be picked out. An absent or empty `assignee` is reported as the sentinel `unassigned` rather than as an empty label value, mirroring `job_state`'s `none`: PromQL has no positive matcher for label absence, so only a value is queryable. The value is otherwise carried raw — the assignee population is operator-authored and bounded, and coercing an unexpected value would hide it — and the metric's Help string names the new label. ⚠️ **Every series changes identity: the same record now exports one more label.** A query selecting on the old label set still matches, since labels are additive, but a panel that groups or joins by the full set sees new keys.
 
