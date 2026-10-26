@@ -221,10 +221,12 @@ func openTaskJobStateOf(task TaskItem) string {
 }
 
 // openTasksByState counts the indexed tasks whose status is neither completed nor
-// aborted, per frontmatter stage, task_type, phase, job presence and PR state. A
-// task with no stage, no task_type or no phase counts under the matching unknown
-// bucket, and one with no status counts as open — an unparseable status is what
-// excludes a page, not a missing one (see buildTasks).
+// aborted, per frontmatter stage, task_type, phase, job presence, PR state and
+// assignee. A task with no stage, no task_type or no phase counts under the
+// matching unknown bucket, and one with no status counts as open — an unparseable
+// status is what excludes a page, not a missing one (see buildTasks). An empty
+// assignee is left empty here and coerced to AssigneeUnassigned at the gauge, the
+// same division of labour job_state uses.
 func openTasksByState(tasks []TaskItem) map[OpenTaskKey]int {
 	counts := make(map[OpenTaskKey]int, len(tasks))
 	for _, task := range tasks {
@@ -237,6 +239,7 @@ func openTasksByState(tasks []TaskItem) map[OpenTaskKey]int {
 			Phase:    task.Phase,
 			JobState: openTaskJobStateOf(task),
 			PRState:  task.PRState,
+			Assignee: task.Assignee,
 		}
 		if key.Stage == "" {
 			key.Stage = StageUnknown
