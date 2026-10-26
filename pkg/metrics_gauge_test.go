@@ -69,8 +69,9 @@ var _ = Describe("Metrics", func() {
 			Expect(
 				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, "unknown", vaultapi.AssigneeUnassigned)].value,
 			).To(Equal(3.0))
-			// An owned record at those same labels is its own series. This is the
-			// discrimination the whole change exists for.
+			// An owned record at those same labels is its own series: two tasks
+			// identical in stage, task_type and phase but differing in owner stay
+			// distinct, so the unowned one remains selectable.
 			Expect(
 				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, "unknown", "bborbe")].value,
 			).To(Equal(2.0))
