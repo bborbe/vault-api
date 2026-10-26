@@ -107,9 +107,24 @@ func taskClaimScope(index *vaultapi.Index, id string) (ClaimScope, bool) {
 // named by its owner and name rather than by any vault path.
 //
 // The key reproduces the one the task executor derives (lowercased owner and
-// repo, hyphen-joined) rather than inventing a second spelling: the executor is
+// repo, slash-joined) rather than inventing a second spelling: the executor is
 // the other holder of these refs, and two spellings of one repository would be
 // two locks that do not exclude each other.
+//
+// ⚠️ The join is "/", not "-", and the difference is a correctness fix, not
+// cosmetics. A hyphen is legal inside both components (validClaimComponent
+// accepts it), so the hyphen join was lossy: owner "a-b" with repo "c" and
+// owner "a" with repo "b-c" both derived "claims/repo/a-b-c" — two distinct
+// repositories aliasing one lock, so the mutual exclusion silently did nothing.
+// "/" is rejected inside a component, so the slash join cannot collide, and it
+// matches the streak keys (claims/redrive/<taskid>/<phase>/<n>), which were
+// already slash-separated.
+//
+// ⚠️ This must change in lockstep with agent-task-executor's DeriveClaimKey. A
+// period where one side writes "claims/repo/a/b" and the other reads
+// "claims/repo/a-b" is a period where the lock excludes nothing. In-flight
+// claims carry a 5-minute lease, so a rolling deploy orphans each one for at
+// most one lease and the next acquire takes it over.
 func repoClaimScope(owner string, repo string) (ClaimScope, bool) {
 	owner = strings.ToLower(owner)
 	repo = strings.ToLower(repo)
@@ -119,7 +134,7 @@ func repoClaimScope(owner string, repo string) (ClaimScope, bool) {
 	return ClaimScope{
 		Scope: "repo",
 		ID:    owner + "/" + repo,
-		Key:   "claims/repo/" + owner + "-" + repo,
+		Key:   "claims/repo/" + owner + "/" + repo,
 	}, true
 }
 
