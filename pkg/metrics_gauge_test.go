@@ -21,6 +21,7 @@ type openTaskSample struct {
 	phase         string
 	jobState      string
 	prState       string
+	assignee      string
 	vault         string
 }
 
@@ -31,8 +32,9 @@ func seriesKey(
 	phase string,
 	jobState string,
 	prState string,
+	assignee string,
 ) string {
-	return stage + "/" + taskType + "/" + phase + "/" + jobState + "/" + prState
+	return stage + "/" + taskType + "/" + phase + "/" + jobState + "/" + prState + "/" + assignee
 }
 
 var _ = Describe("Metrics", func() {
@@ -43,12 +45,17 @@ var _ = Describe("Metrics", func() {
 
 			metrics.SetOpenTasks(map[vaultapi.OpenTaskKey]int{
 				{Stage: "prod", TaskType: "pr-review", Phase: "planning"}: 3,
+				// The same stage, task_type and phase, differing only in assignee:
+				// without the label these two records merge into one series of 5 and
+				// the unowned work cannot be picked out.
+				{Stage: "prod", TaskType: "pr-review", Phase: "planning", Assignee: "bborbe"}: 2,
 				{
 					Stage:    "prod",
 					TaskType: "pr-review",
 					Phase:    "human_review",
 					JobState: vaultapi.JobRunning,
 					PRState:  "open",
+					Assignee: "pr-reviewer-agent",
 				}: 5,
 				{Stage: "dev", TaskType: "pr-review", Phase: "human_review"}: 1,
 				{Stage: "", TaskType: "github-release", Phase: ""}:           2,
@@ -56,26 +63,32 @@ var _ = Describe("Metrics", func() {
 			})
 
 			samples := gatherOpenTasks()
-			Expect(samples).To(HaveLen(5))
+			Expect(samples).To(HaveLen(6))
 			// One stage and task_type split into two series when the phase differs —
 			// that split is the whole point of the label.
 			Expect(
-				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, "unknown")].value,
+				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, "unknown", vaultapi.AssigneeUnassigned)].value,
 			).To(Equal(3.0))
+			// An owned record at those same labels is its own series. This is the
+			// discrimination the whole change exists for.
+			Expect(
+				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, "unknown", "bborbe")].value,
+			).To(Equal(2.0))
 			// A record carrying a claimed job is its own series, and the PR state
 			// rides along with it: that is what makes "running" and "moot" selectable.
 			Expect(
-				samples[seriesKey("prod", "pr-review", "human_review", vaultapi.JobRunning, "open")].value,
+				samples[seriesKey("prod", "pr-review", "human_review", vaultapi.JobRunning, "open", "pr-reviewer-agent")].value,
 			).To(Equal(5.0))
 			Expect(
-				samples[seriesKey("dev", "pr-review", "human_review", vaultapi.JobNone, "unknown")].value,
+				samples[seriesKey("dev", "pr-review", "human_review", vaultapi.JobNone, "unknown", vaultapi.AssigneeUnassigned)].value,
 			).To(Equal(1.0))
-			// An absent stage, task_type and phase each land in their own unknown bucket.
+			// An absent stage, task_type, phase and assignee each land in their own
+			// sentinel bucket, so an unlabelled record still counts.
 			Expect(
-				samples[seriesKey(vaultapi.StageUnknown, "github-release", vaultapi.PhaseUnknown, vaultapi.JobNone, vaultapi.PRStateUnknown)].value,
+				samples[seriesKey(vaultapi.StageUnknown, "github-release", vaultapi.PhaseUnknown, vaultapi.JobNone, vaultapi.PRStateUnknown, vaultapi.AssigneeUnassigned)].value,
 			).To(Equal(2.0))
 			Expect(
-				samples[seriesKey("dev", vaultapi.TaskTypeUnknown, "execution", vaultapi.JobNone, vaultapi.PRStateUnknown)].value,
+				samples[seriesKey("dev", vaultapi.TaskTypeUnknown, "execution", vaultapi.JobNone, vaultapi.PRStateUnknown, vaultapi.AssigneeUnassigned)].value,
 			).To(Equal(4.0))
 
 			for key, sample := range samples {
@@ -84,16 +97,21 @@ var _ = Describe("Metrics", func() {
 			}
 
 			// Reset before set: a series that loses its last open task must not keep
-			// reporting its previous value.
+			// reporting its previous value. The survivor carries an assignee so the
+			// assertion also proves the reset spans the new label: the unassigned
+			// series at these same labels must be gone.
 			metrics.SetOpenTasks(map[vaultapi.OpenTaskKey]int{
-				{Stage: "prod", TaskType: "pr-review", Phase: "planning"}: 1,
+				{Stage: "prod", TaskType: "pr-review", Phase: "planning", Assignee: "bborbe"}: 1,
 			})
 
 			samples = gatherOpenTasks()
 			Expect(samples).To(HaveLen(1))
 			Expect(
-				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, vaultapi.PRStateUnknown)].value,
+				samples[seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, vaultapi.PRStateUnknown, "bborbe")].value,
 			).To(Equal(1.0))
+			Expect(
+				samples,
+			).NotTo(HaveKey(seriesKey("prod", "pr-review", "planning", vaultapi.JobNone, vaultapi.PRStateUnknown, vaultapi.AssigneeUnassigned)))
 		},
 	)
 })
@@ -124,9 +142,18 @@ func gatherOpenTasks() map[string]openTaskSample {
 					sample.jobState = label.GetValue()
 				case "pr_state":
 					sample.prState = label.GetValue()
+				case "assignee":
+					sample.assignee = label.GetValue()
 				}
 			}
-			samples[seriesKey(sample.stage, sample.taskType, sample.phase, sample.jobState, sample.prState)] = sample
+			samples[seriesKey(
+				sample.stage,
+				sample.taskType,
+				sample.phase,
+				sample.jobState,
+				sample.prState,
+				sample.assignee,
+			)] = sample
 		}
 	}
 	return samples

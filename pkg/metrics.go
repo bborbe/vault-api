@@ -39,6 +39,16 @@ const (
 	// is deliberately distinct from PRStateNone (no PR at all): unknown means "ask
 	// again after the next sweep", none means "this task will never have one".
 	PRStateUnknown = "unknown"
+	// AssigneeUnassigned is the assignee value for a task whose frontmatter names no
+	// owner. Like JobNone it is a positive reading — nobody owns this task — not a
+	// missing one, so it is a value rather than an absent label: only a value is
+	// queryable, and PromQL has no positive matcher for label absence.
+	//
+	// Spelled "unassigned" rather than the "none" used by job_state and pr_state
+	// because this label carries an identity, not an object: "none" in a column of
+	// names reads as a person called none, while "unassigned" is also the word the
+	// panel legend has to show to make the split legible.
+	AssigneeUnassigned = "unassigned"
 )
 
 // OpenTaskKey identifies one vault_api_open_tasks series. Stage is the task's own
@@ -51,12 +61,18 @@ const (
 // JobState and PRState are the two labels the four-state split needs. JobState
 // separates a task an agent is working from one merely marked open; PRState makes
 // "the PR is already merged" provable from this metric alone.
+//
+// Assignee is the task's own frontmatter assignee, carried raw. It is what
+// separates an owned record from an abandoned one at the same phase: without it
+// two tasks in identical states are indistinguishable on the dashboard, and the
+// unowned one — the one that needs a human — cannot be picked out.
 type OpenTaskKey struct {
 	Stage    string
 	TaskType string
 	Phase    string
 	JobState string
 	PRState  string
+	Assignee string
 }
 
 // Metrics is the instrumentation the storage decorator and the index write to.
@@ -85,7 +101,7 @@ func NewMetrics(instanceStage string, vault string) Metrics {
 		}, []string{"kind"}),
 		openTasks: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "vault_api_open_tasks",
-			Help: "Number of open tasks in the vault — status neither completed nor aborted — by the task's own frontmatter stage, by task_type, by phase, by whether a job is claimed (job_state) and by the PR's last observed state (pr_state). Unit: tasks.",
+			Help: "Number of open tasks in the vault — status neither completed nor aborted — by the task's own frontmatter stage, by task_type, by phase, by whether a job is claimed (job_state), by the PR's last observed state (pr_state) and by the owner named in the task's frontmatter (assignee, with the sentinel \"unassigned\" for a task nobody owns). Unit: tasks.",
 			ConstLabels: prometheus.Labels{
 				"instance_stage": instanceStage,
 				"vault":          vault,
@@ -94,7 +110,7 @@ func NewMetrics(instanceStage string, vault string) Metrics {
 			// (kubernetes-pods), and an exporter label of the same name is renamed
 			// to exported_job by the scrape — the series would read correctly on
 			// /metrics and wrongly in Prometheus.
-		}, []string{"stage", "task_type", "phase", "job_state", "pr_state"}),
+		}, []string{"stage", "task_type", "phase", "job_state", "pr_state", "assignee"}),
 	}
 	prometheus.MustRegister(m.fileReads, m.openTasks)
 	for _, kind := range []string{FileReadKindList, FileReadKindRead} {
@@ -127,6 +143,7 @@ func (m *metrics) SetOpenTasks(counts map[OpenTaskKey]int) {
 			openTaskPhase(key),
 			openTaskJobState(key),
 			openTaskPRState(key),
+			openTaskAssignee(key),
 		).Set(float64(count))
 	}
 }
@@ -166,6 +183,18 @@ func openTaskPRState(key OpenTaskKey) string {
 		return PRStateUnknown
 	}
 	return key.PRState
+}
+
+// openTaskAssignee maps an absent assignee onto AssigneeUnassigned, mirroring
+// openTaskJobState: an empty assignee is a positive reading — nobody owns this
+// task — not a missing one. A non-empty assignee passes through verbatim; the
+// population is operator-authored and bounded, and coercing an unexpected value
+// would hide it.
+func openTaskAssignee(key OpenTaskKey) string {
+	if key.Assignee == "" {
+		return AssigneeUnassigned
+	}
+	return key.Assignee
 }
 
 // openTaskPhase maps an absent phase onto PhaseUnknown, mirroring openTaskType. A

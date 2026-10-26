@@ -238,7 +238,12 @@ var _ = Describe("Index", func() {
 		writeFile(
 			tasksDir,
 			"Epsilon",
-			taskFrontmatter("status: in_progress", "task_type: github-release", "stage: dev"),
+			taskFrontmatter(
+				"status: in_progress",
+				"task_type: github-release",
+				"stage: dev",
+				"assignee: github-releaser-agent",
+			),
 		)
 		writeFile(tasksDir, "Zeta", taskFrontmatter("status: in_progress", "stage: prod"))
 		writeFile(
@@ -263,6 +268,7 @@ var _ = Describe("Index", func() {
 				"stage: prod",
 				"current_job: pr-reviewer-agent-123",
 				"pr_state: open",
+				"assignee: bborbe",
 			),
 		)
 		writeFile(
@@ -274,6 +280,9 @@ var _ = Describe("Index", func() {
 				"stage: prod",
 				`current_job: ""`,
 				"pr_state: merged",
+				// An explicitly empty assignee collapses to the same empty value as an
+				// absent one — the sentinel is applied at the gauge, not here.
+				`assignee: ""`,
 			),
 		)
 		Expect(index.Build(ctx, store)).To(Succeed())
@@ -302,7 +311,8 @@ var _ = Describe("Index", func() {
 				Phase:    "unknown",
 				JobState: vaultapi.JobNone,
 				PRState:  vaultapi.PRStateUnknown,
-			}: 1, // Epsilon
+				Assignee: "github-releaser-agent",
+			}: 1, // Epsilon — named owner carried raw
 			{
 				Stage:    "dev",
 				TaskType: "pr-review",
@@ -323,7 +333,8 @@ var _ = Describe("Index", func() {
 				Phase:    "unknown",
 				JobState: vaultapi.JobRunning,
 				PRState:  "open",
-			}: 1, // Kappa — claimed job, PR open
+				Assignee: "bborbe",
+			}: 1, // Kappa — claimed job, PR open, named owner
 			{
 				Stage:    "prod",
 				TaskType: "pr-review",
