@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.0
 
 - feat: **`POST /tasks` can replace a terminal task in place, and a new `POST /tasks/{id}/readdress` moves a task's identifier without moving its file.** Both exist for the controller's remaining call sites, and both were blocked on capability rather than effort: the create route answered `409` for every occupant and had no branch for a terminal one, and `PATCH` refuses `task_identifier` by design, so a retry that mints a new identifier had no route at all.
   **`"reopen": "terminal"`** is opt-in and covers exactly one case — an occupant whose status is `completed` or `aborted`. Absent or any other value keeps the route's original behaviour, so no existing caller changes. ⚠️ **A reopen REPLACES the frontmatter and the body rather than merging them**, and that is why it is a mode on create rather than a read-then-`PATCH`: `PATCH` merges an allowlist, so a reopened task would keep the previous attempt's `completed_date`, `recovery_sha`, `superseded_by` and terminal `phase` — a live task wearing a dead task's history. A **live** occupant is still `409` even when `reopen` is asked for, because reopening one would let two attempts share an identity.
