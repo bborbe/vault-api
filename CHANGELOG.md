@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.17.0
 
 - fix: **Join the repository claim key with `/` instead of `-`, because the hyphen join silently made two repositories share one lock.** A claim is a mutual-exclusion primitive, and its key has to identify exactly one object. It did not: `repoClaimScope` built `claims/repo/<owner>-<repo>`, and a hyphen is legal inside both components — `validClaimComponent` accepts `[a-z0-9._-]` — so `owner=a-b, repo=c` and `owner=a, repo=b-c` both derived `claims/repo/a-b-c`. Two distinct repositories therefore aliased one lock, which means the exclusion did nothing and two runs could proceed against the same repository believing they held it. The join is now `/`, which cannot collide because `/` is rejected inside a component, and it matches the streak keys (`claims/redrive/<taskid>/<phase>/<n>`), which were already slash-separated. ⚠️ **This is a wire-format change and must be deployed in lockstep with `agent-task-executor`'s `DeriveClaimKey`, which derives the same key from the other side** — the format belongs to the executor, and a period where one side writes `claims/repo/a/b` and the other reads `claims/repo/a-b` is a period where the lock excludes nothing. In-flight claims carry a 5-minute lease, so a rolling deploy orphans each one for at most one lease, and the next acquire takes it over rather than refusing: `acquireToken` (`pkg/handler/claims.go`) reads the existing ref and, when `leaseExpired` holds, returns **that ref's own SHA** as the compare-and-swap token with no live holder, so the acquire succeeds instead of answering `409 claim_held`.
 
