@@ -48,6 +48,7 @@ var _ = Describe("Task content endpoints", func() {
 		tasksDir  string
 		index     *vaultapi.Index
 		writer    *fakeWriter
+		publisher *recordingPublisher
 		router    http.Handler
 	)
 
@@ -68,11 +69,12 @@ var _ = Describe("Task content endpoints", func() {
 		}, fakeMetrics{})
 
 		writer = &fakeWriter{}
+		publisher = &recordingPublisher{}
 		clock := libtime.NewCurrentDateTime()
 		clock.SetNow(libtime.NewDateTime(2026, 10, 25, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", writer, clock,
-			&recordingPublisher{}, &fakeRefClient{},
+			publisher, &fakeRefClient{},
 		)
 	})
 
@@ -374,6 +376,127 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(BeEmpty())
 		})
 
+		It("names the occupant in the 409, so the caller need not re-read to decide", func() {
+			// `id` used to be the title, which is the address the caller had just
+			// sent — so it learned nothing and could not tell "terminal, reopen"
+			// from "different task, disambiguate" without a second read it had no
+			// address for.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(http.MethodPost, "/api/v1/tasks", `{"title":"Alpha"}`)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+
+			body := decode(recorder)
+			Expect(body["task_identifier"]).To(Equal("task-1"))
+			Expect(body["status"]).To(Equal("in_progress"))
+			// `id` keeps its original meaning so an existing caller is unaffected
+			Expect(body["id"]).To(Equal("Alpha"))
+		})
+
+		It("omits task_identifier from the 409 when the occupant has none", func() {
+			// A page the index addresses by its filename slug carries no
+			// task_identifier; advertising the string "<nil>" would be exactly the
+			// misleading payload this refusal exists to replace.
+			Expect(os.WriteFile(
+				filepath.Join(tasksDir, "Alpha.md"),
+				[]byte("---\nstatus: in_progress\n---\nbody\n"),
+				0o600,
+			)).To(Succeed())
+			Expect(index.Build(ctx, store())).To(Succeed())
+
+			recorder := call(http.MethodPost, "/api/v1/tasks", `{"title":"Alpha"}`)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			body := decode(recorder)
+			Expect(body).NotTo(HaveKey("task_identifier"))
+			Expect(body["status"]).To(Equal("in_progress"))
+		})
+
+		It("replaces a terminal occupant when reopen is terminal", func() {
+			seed(
+				"task_identifier: task-1\nstatus: completed\nphase: done\ncompleted_date: 2026-01-01T00:00:00Z\nrecovery_sha: deadbeef\n",
+			)
+			recorder := call(
+				http.MethodPost,
+				"/api/v1/tasks",
+				`{"title":"Alpha","reopen":"terminal","frontmatter":{"task_identifier":"task-2","status":"in_progress"},"body":"fresh\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			body := decode(recorder)
+			Expect(body["reopened"]).To(Equal(true))
+			Expect(body["id"]).To(Equal("task-2"))
+
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
+			// REPLACED, not merged: a merged reopen would leave the previous
+			// attempt's completion record on a live task.
+			Expect(writer.calls[0].content).NotTo(ContainSubstring("completed_date"))
+			Expect(writer.calls[0].content).NotTo(ContainSubstring("recovery_sha"))
+			Expect(writer.calls[0].content).NotTo(ContainSubstring("task-1"))
+			Expect(writer.calls[0].content).To(ContainSubstring("task-2"))
+			Expect(writer.calls[0].content).To(ContainSubstring("fresh"))
+		})
+
+		It("refuses to reopen a live occupant even when asked", func() {
+			// Reopening a live task would let two attempts share one identity,
+			// which is the collision the terminal-status rule exists to prevent.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks",
+				`{"title":"Alpha","reopen":"terminal","frontmatter":{"status":"in_progress"}}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			Expect(decode(recorder)["task_identifier"]).To(Equal("task-1"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
+		It(
+			"judges the occupant at the path, not a page whose identifier matches the title",
+			func() {
+				// The data-loss sequence the index's shared key space makes reachable:
+				// GetTask resolves identifier, name and slug together, so a page
+				// elsewhere carrying task_identifier "Alpha" would stand in for the task
+				// that actually occupies Alpha.md — and its terminal status would
+				// authorise replacing a live task.
+				seed("task_identifier: task-1\nstatus: in_progress\n")
+				Expect(os.WriteFile(
+					filepath.Join(tasksDir, "Bravo.md"),
+					[]byte("---\ntask_identifier: Alpha\nstatus: completed\n---\nbody\n"),
+					0o600,
+				)).To(Succeed())
+				Expect(index.Build(ctx, store())).To(Succeed())
+
+				recorder := call(
+					http.MethodPost,
+					"/api/v1/tasks",
+					`{"title":"Alpha","reopen":"terminal","frontmatter":{"task_identifier":"task-9","status":"in_progress"}}`,
+				)
+				Expect(recorder.Code).To(Equal(http.StatusConflict))
+				Expect(decode(recorder)["task_identifier"]).To(Equal("task-1"))
+				Expect(writer.calls).To(BeEmpty(), "the live Alpha.md must survive")
+			},
+		)
+
+		It("keeps 409 for a reopen value it does not recognise", func() {
+			seed("task_identifier: task-1\nstatus: completed\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks",
+				`{"title":"Alpha","reopen":"always"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
+		It("mints an identifier when a reopen omits one", func() {
+			seed("task_identifier: task-1\nstatus: completed\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks",
+				`{"title":"Alpha","reopen":"terminal","frontmatter":{"status":"in_progress"}}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["id"]).NotTo(BeEmpty())
+			Expect(decode(recorder)["id"]).NotTo(Equal("task-1"))
+		})
+
 		It("refuses the fields PATCH refuses, so create is not a way around it", func() {
 			Expect(index.Build(ctx, store())).To(Succeed())
 			for _, body := range []string{
@@ -415,6 +538,98 @@ var _ = Describe("Task content endpoints", func() {
 			recorder := call(http.MethodPost, "/api/v1/tasks", `{"title":"../escape"}`)
 			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
 			Expect(decode(recorder)["error"]).To(Equal("invalid_title"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+	})
+
+	Describe("POST /tasks/{id}/readdress", func() {
+		It("moves the identifier and leaves the file where it is", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-2"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["id"]).To(Equal("task-2"))
+
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
+			Expect(writer.calls[0].content).To(ContainSubstring("task-2"))
+			Expect(writer.calls[0].content).NotTo(ContainSubstring("task-1"))
+
+			// The change event must announce the NEW address. It is read from the
+			// item, so publishing before the item is updated announces the old one —
+			// the single value a caller must not be told after a move.
+			Expect(publisher.changed).To(HaveLen(1))
+			Expect(string(publisher.changed[0].TaskIdentifier)).To(Equal("task-2"))
+		})
+
+		It("treats a move to the task's own title as a no-op", func() {
+			// GetTask keys identifier, name and slug in one map, so the task's own
+			// title resolves back to itself; without the path comparison this lands
+			// in the collision branch and answers 409 naming the task itself.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"Alpha"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["id"]).To(Equal("Alpha"))
+		})
+
+		It("refuses to move onto an identifier another task already answers to", func() {
+			// Silently merging two tasks into one address is the worst outcome
+			// available here, so the refusal is mandatory rather than defensive.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			Expect(os.WriteFile(
+				filepath.Join(tasksDir, "Bravo.md"),
+				[]byte("---\ntask_identifier: task-2\nstatus: in_progress\n---\nbody\n"),
+				0o600,
+			)).To(Succeed())
+			Expect(index.Build(ctx, store())).To(Succeed())
+
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-2"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			Expect(decode(recorder)["error"]).To(Equal("task_exists"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
+		It("preserves the frontmatter it does not set", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\npriority: 2\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-2"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring("priority"))
+			Expect(writer.calls[0].content).To(ContainSubstring("status: in_progress"))
+		})
+
+		It("is a no-op when the task is already addressed that way", func() {
+			// A caller re-sending the same move is retrying, not colliding with
+			// itself; 409 here would make the verb non-idempotent.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-1"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["id"]).To(Equal("task-1"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
+		It("refuses an empty identifier", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"  "}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_task_identifier"))
 			Expect(writer.calls).To(BeEmpty())
 		})
 	})

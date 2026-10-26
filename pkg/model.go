@@ -37,6 +37,15 @@ type TaskItem struct {
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
+// IsTerminalStatus reports whether a task status ends the task's life. The vault
+// has exactly two, and this is the one definition of them: the open-task gauge
+// uses it to decide what counts as open (openTasksByState), and the create route
+// uses it to decide whether an occupying task may be reopened. A second copy of
+// this predicate is how the two answers drift apart.
+func IsTerminalStatus(status string) bool {
+	return status == "completed" || status == "aborted"
+}
+
 // GoalItem is the typed projection of one goal page. It is served by
 // GET /api/v1/goals and GET /api/v1/goals/{id}.
 type GoalItem struct {

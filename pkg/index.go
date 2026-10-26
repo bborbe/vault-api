@@ -230,7 +230,7 @@ func openTaskJobStateOf(task TaskItem) string {
 func openTasksByState(tasks []TaskItem) map[OpenTaskKey]int {
 	counts := make(map[OpenTaskKey]int, len(tasks))
 	for _, task := range tasks {
-		if task.Status == "completed" || task.Status == "aborted" {
+		if IsTerminalStatus(task.Status) {
 			continue
 		}
 		key := OpenTaskKey{

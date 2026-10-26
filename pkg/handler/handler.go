@@ -78,6 +78,9 @@ func NewHandler(
 	api.Path("/tasks").Methods(http.MethodPost).HandlerFunc(handleCreateTask(deps))
 	api.Path("/tasks/{id}").Methods(http.MethodGet).HandlerFunc(handleGetTaskDocument(deps))
 	api.Path("/tasks/{id}").Methods(http.MethodPatch).HandlerFunc(handlePatchTask(deps))
+	api.Path("/tasks/{id}/readdress").
+		Methods(http.MethodPost).
+		HandlerFunc(handleReaddressTask(deps))
 	api.Path("/tasks/{id}/content").
 		Methods(http.MethodPut).
 		HandlerFunc(handlePutTaskContent(deps))
