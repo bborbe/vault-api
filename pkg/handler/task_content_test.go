@@ -48,6 +48,7 @@ var _ = Describe("Task content endpoints", func() {
 		tasksDir  string
 		index     *vaultapi.Index
 		writer    *fakeWriter
+		publisher *recordingPublisher
 		router    http.Handler
 	)
 
@@ -68,11 +69,12 @@ var _ = Describe("Task content endpoints", func() {
 		}, fakeMetrics{})
 
 		writer = &fakeWriter{}
+		publisher = &recordingPublisher{}
 		clock := libtime.NewCurrentDateTime()
 		clock.SetNow(libtime.NewDateTime(2026, 10, 25, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", writer, clock,
-			&recordingPublisher{}, &fakeRefClient{},
+			publisher, &fakeRefClient{},
 		)
 	})
 
@@ -390,6 +392,24 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(body["id"]).To(Equal("Alpha"))
 		})
 
+		It("omits task_identifier from the 409 when the occupant has none", func() {
+			// A page the index addresses by its filename slug carries no
+			// task_identifier; advertising the string "<nil>" would be exactly the
+			// misleading payload this refusal exists to replace.
+			Expect(os.WriteFile(
+				filepath.Join(tasksDir, "Alpha.md"),
+				[]byte("---\nstatus: in_progress\n---\nbody\n"),
+				0o600,
+			)).To(Succeed())
+			Expect(index.Build(ctx, store())).To(Succeed())
+
+			recorder := call(http.MethodPost, "/api/v1/tasks", `{"title":"Alpha"}`)
+			Expect(recorder.Code).To(Equal(http.StatusConflict))
+			body := decode(recorder)
+			Expect(body).NotTo(HaveKey("task_identifier"))
+			Expect(body["status"]).To(Equal("in_progress"))
+		})
+
 		It("replaces a terminal occupant when reopen is terminal", func() {
 			seed(
 				"task_identifier: task-1\nstatus: completed\nphase: done\ncompleted_date: 2026-01-01T00:00:00Z\nrecovery_sha: deadbeef\n",
@@ -536,6 +556,25 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
 			Expect(writer.calls[0].content).To(ContainSubstring("task-2"))
 			Expect(writer.calls[0].content).NotTo(ContainSubstring("task-1"))
+
+			// The change event must announce the NEW address. It is read from the
+			// item, so publishing before the item is updated announces the old one —
+			// the single value a caller must not be told after a move.
+			Expect(publisher.changed).To(HaveLen(1))
+			Expect(string(publisher.changed[0].TaskIdentifier)).To(Equal("task-2"))
+		})
+
+		It("treats a move to the task's own title as a no-op", func() {
+			// GetTask keys identifier, name and slug in one map, so the task's own
+			// title resolves back to itself; without the path comparison this lands
+			// in the collision branch and answers 409 naming the task itself.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"Alpha"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["id"]).To(Equal("Alpha"))
 		})
 
 		It("refuses to move onto an identifier another task already answers to", func() {

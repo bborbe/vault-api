@@ -186,7 +186,13 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, document.view())
 			return
 		}
-		if occupant, found, _ := deps.index.GetTask(next); found {
+		if occupant, found, _ := deps.index.GetTask(next); found &&
+			occupant.Path != document.item.Path {
+			// A different page already answers to the target. The Path comparison
+			// is what separates that from the task's own title or slug resolving
+			// back to itself — GetTask keys identifier, name and slug in one map,
+			// so re-addressing to one's own title lands here otherwise and would
+			// answer 409 naming the task itself.
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"error":           "task_exists",
 				"id":              occupant.Title,
@@ -196,13 +202,14 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			return
 		}
 		document.set("task_identifier", next)
+		// Set before persist, not after: persist publishes the change event, and
+		// that event's TaskIdentifier is read from the item. Assigning afterwards
+		// emits a re-address announcement carrying the OLD address, which is the
+		// one value a caller must not be told after the move.
+		document.item.ID = next
 		if !document.persist(ctx, w, deps) {
 			return
 		}
-		// view() renders ID from the indexed item, not from the frontmatter, so a
-		// re-address that only mutated the frontmatter would answer under the OLD
-		// address — the one thing a caller must not be told after moving the task.
-		document.item.ID = next
 		writeJSON(w, http.StatusOK, document.view())
 	}
 }
@@ -461,10 +468,28 @@ func occupantAtPath(
 	if err != nil {
 		return vaultapi.TaskItem{}, false
 	}
+	// Both values are normalised the way the index normalises them, because
+	// IsTerminalStatus is fed the index's TaskItem.Status elsewhere: comparing a
+	// raw string here and a normalised one there is exactly the drift one shared
+	// predicate is supposed to prevent. An absent or unparseable status normalises
+	// to "" — not terminal — so a page whose status cannot be read can never
+	// authorise replacing itself.
+	status := ""
+	if raw, present := frontmatter["status"]; present {
+		if normalized, ok := domain.NormalizeTaskStatus(fmt.Sprint(raw)); ok {
+			status = string(normalized)
+		}
+	}
+	// A page with no task_identifier is addressed by its slug, and saying so is
+	// better than advertising the string "<nil>" in the refusal.
+	identifier := ""
+	if raw, present := frontmatter["task_identifier"]; present {
+		identifier = fmt.Sprint(raw)
+	}
 	return vaultapi.TaskItem{
-		ID:     fmt.Sprint(frontmatter["task_identifier"]),
+		ID:     identifier,
 		Title:  title,
-		Status: fmt.Sprint(frontmatter["status"]),
+		Status: status,
 	}, true
 }
 
@@ -485,8 +510,15 @@ func writeTaskExists(
 		"path":  path,
 	}
 	if found {
-		payload["task_identifier"] = occupant.ID
-		payload["status"] = occupant.Status
+		// Only the fields that are actually present: a page addressed by its slug
+		// has no task_identifier, and advertising "<nil>" would be the misleading
+		// payload this refusal exists to replace.
+		if occupant.ID != "" {
+			payload["task_identifier"] = occupant.ID
+		}
+		if occupant.Status != "" {
+			payload["status"] = occupant.Status
+		}
 	}
 	writeJSON(w, http.StatusConflict, payload)
 }
