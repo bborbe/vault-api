@@ -112,6 +112,8 @@ var _ = Describe("Claim handlers", func() {
 			HandlerFunc(handler.ReleaseClaimHandler(deps, repoScope))
 		api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodGet).
 			HandlerFunc(handler.ReadClaimHandler(deps, repoScope))
+		api.Path("/claims").Methods(http.MethodGet).
+			HandlerFunc(handler.ListClaimsHandler(deps))
 		return r
 	}
 
@@ -417,6 +419,181 @@ var _ = Describe("Claim handlers", func() {
 			router.ServeHTTP(recorder, request.WithContext(ctx))
 			Expect(recorder.Code).To(Equal(http.StatusNoContent))
 			Expect(refs.lastDelete).To(Equal("held-sha"))
+		})
+	})
+
+	Describe("list", func() {
+		var get func(path string)
+
+		listBody := func() handler.ClaimListResponse {
+			var body handler.ClaimListResponse
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &body)).To(Succeed())
+			return body
+		}
+
+		BeforeEach(func() {
+			get = func(path string) {
+				request := httptest.NewRequest(http.MethodGet, path, nil)
+				router.ServeHTTP(recorder, request.WithContext(ctx))
+			}
+		})
+
+		It("lists every claim under the claims prefix, not one scope at a time", func() {
+			refs.refs = []gitrest.ClaimRef{
+				{
+					Ref:        "refs/claims/task/task-1",
+					SHA:        "sha-task",
+					Cluster:    "nukedev",
+					TaskID:     "task-1",
+					LeaseUntil: "2026-10-25T12:05:00Z",
+				},
+				{
+					Ref:        "refs/claims/repo/bborbe/git-rest",
+					SHA:        "sha-repo",
+					Cluster:    "nukedev",
+					TaskID:     "task-2",
+					LeaseUntil: "2026-10-25T12:05:00Z",
+				},
+				{
+					Ref:        "refs/claims/pr/bborbe/git-rest/7",
+					SHA:        "sha-pr",
+					Cluster:    "nukedev",
+					TaskID:     "task-2",
+					LeaseUntil: "2026-10-25T12:05:00Z",
+				},
+			}
+
+			get("/api/v1/claims")
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			// One call, whole namespace: the prefix is the claims root, not a scope.
+			Expect(refs.lastPrefix).To(Equal("claims/"))
+
+			body := listBody()
+			Expect(body.Total).To(Equal(3))
+			Expect(body.Skipped).To(Equal(0))
+			Expect(body.Items).To(HaveLen(3))
+
+			// Sorted by scope then id, so a caller diffing two listings does not
+			// see churn that is only ordering.
+			Expect(body.Items[0].Scope).To(Equal("pr"))
+			Expect(body.Items[0].ID).To(Equal("bborbe/git-rest/7"))
+			Expect(body.Items[1].Scope).To(Equal("repo"))
+			Expect(body.Items[1].ID).To(Equal("bborbe/git-rest"))
+			Expect(body.Items[2].Scope).To(Equal("task"))
+			Expect(body.Items[2].ID).To(Equal("task-1"))
+		})
+
+		It("answers the fields a restarting executor needs to act on a listed claim", func() {
+			refs.refs = []gitrest.ClaimRef{
+				{
+					Ref:        "refs/claims/repo/bborbe/git-rest",
+					SHA:        "sha-repo",
+					Cluster:    "nukedev",
+					TaskID:     "task-2",
+					LeaseUntil: "2026-10-25T12:05:00Z",
+				},
+			}
+
+			get("/api/v1/claims")
+
+			item := listBody().Items[0]
+			// task_id is the field the listing exists for: Recover groups by it, so
+			// without it a repo claim cannot be attributed to the run that holds it.
+			Expect(item.TaskID).To(Equal("task-2"))
+			Expect(item.Holder).To(Equal("nukedev"))
+			Expect(item.LeaseUntil).To(Equal("2026-10-25T12:05:00Z"))
+			Expect(item.RenewBefore).To(Equal("2026-10-25T12:04:00Z"))
+			// The compare-and-swap token, so a listed claim can be renewed or
+			// released without a second read.
+			Expect(item.LeaseToken).To(Equal("sha-repo"))
+		})
+
+		It("addresses a repo claim as owner/name, which the slash join made possible", func() {
+			// Under the hyphen join this key was "claims/repo/bborbe-git-rest" and
+			// could not be split back into owner and repo at all.
+			refs.refs = []gitrest.ClaimRef{
+				{Ref: "refs/claims/repo/bborbe/git-rest", SHA: "s", Cluster: "nukedev"},
+			}
+
+			get("/api/v1/claims")
+
+			Expect(listBody().Items[0].ID).To(Equal("bborbe/git-rest"))
+		})
+
+		It("narrows to one holder and leaves the rest out", func() {
+			refs.refs = []gitrest.ClaimRef{
+				{Ref: "refs/claims/task/task-1", SHA: "a", Cluster: "nukedev", TaskID: "task-1"},
+				{Ref: "refs/claims/task/task-2", SHA: "b", Cluster: "sun", TaskID: "task-2"},
+			}
+
+			get("/api/v1/claims?holder=sun")
+
+			body := listBody()
+			Expect(body.Total).To(Equal(1))
+			Expect(body.Items[0].ID).To(Equal("task-2"))
+			Expect(body.Items[0].Holder).To(Equal("sun"))
+			// A claim filtered out by holder is not "skipped": skipped means "not a
+			// claim", and conflating the two would hide a real key-shape change.
+			Expect(body.Skipped).To(Equal(0))
+		})
+
+		It("counts refs under the prefix that are not claims instead of answering them", func() {
+			refs.refs = []gitrest.ClaimRef{
+				{Ref: "refs/claims/task/task-1", SHA: "a", Cluster: "nukedev", TaskID: "task-1"},
+				// A redrive streak key: a counter under the same prefix, never
+				// acquired or released, so answering it as a claim would invite a
+				// caller to renew something that is not a lock.
+				{Ref: "refs/claims/redrive/task-1/planning/1", SHA: "b", Cluster: "nukedev"},
+				{Ref: "refs/claims/redrive-reason/task-1", SHA: "c", Cluster: "nukedev"},
+			}
+
+			get("/api/v1/claims")
+
+			body := listBody()
+			Expect(body.Total).To(Equal(1))
+			Expect(body.Skipped).To(Equal(2))
+			Expect(body.Items[0].ID).To(Equal("task-1"))
+		})
+
+		It("counts a malformed claim key as skipped rather than splitting it wrongly", func() {
+			refs.refs = []gitrest.ClaimRef{
+				// Two components where three are required: not addressable, so not
+				// answerable as a per-PR claim.
+				{Ref: "refs/claims/pr/bborbe/git-rest", SHA: "a", Cluster: "nukedev"},
+				{Ref: "refs/claims/task/", SHA: "b", Cluster: "nukedev"},
+			}
+
+			get("/api/v1/claims")
+
+			body := listBody()
+			Expect(body.Total).To(Equal(0))
+			Expect(body.Skipped).To(Equal(2))
+			Expect(body.Items).To(BeEmpty())
+		})
+
+		It("refuses an unknown filter instead of ignoring it", func() {
+			get("/api/v1/claims?cluster=nukedev")
+
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("unknown_filter"))
+			Expect(decode()["filter"]).To(Equal("cluster"))
+		})
+
+		It("refuses an empty holder rather than returning every claim", func() {
+			get("/api/v1/claims?holder=")
+
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("invalid_filter"))
+		})
+
+		It("answers 500 when the transport read fails, not an empty list", func() {
+			refs.listErr = stderrors.New("git-rest unavailable")
+
+			get("/api/v1/claims")
+
+			Expect(recorder.Code).To(Equal(http.StatusInternalServerError))
+			Expect(decode()["error"]).To(Equal("claim_read_failed"))
 		})
 	})
 })

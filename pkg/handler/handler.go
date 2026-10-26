@@ -96,10 +96,23 @@ func NewHandler(
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
 
-	// Claims are addressed by the object they are held on — a task identifier or
-	// a repository — never by a vault path. The transport under them is git-rest's
-	// claim refs; a caller never sees that vocabulary.
-	claimDeps := ClaimDeps{Refs: refs, Clock: clock}
+	registerClaimRoutes(api, ClaimDeps{Refs: refs, Clock: clock}, index)
+
+	return router
+}
+
+// registerClaimRoutes wires the claim surface: the collection read plus the
+// identifier-addressed acquire, renew, release and read for each scope.
+//
+// Claims are addressed by the object they are held on — a task identifier or a
+// repository — never by a vault path. The transport under them is git-rest's
+// claim refs; a caller never sees that vocabulary.
+//
+// The collection read is registered first because it is what tells a caller
+// which of the identifier-addressed routes it needs to call at all.
+func registerClaimRoutes(api *mux.Router, claimDeps ClaimDeps, index *vaultapi.Index) {
+	api.Path("/claims").Methods(http.MethodGet).HandlerFunc(ListClaimsHandler(claimDeps))
+
 	taskScope := TaskClaimScope(index)
 	api.Path("/tasks/{id}/claim").Methods(http.MethodPost).
 		HandlerFunc(AcquireClaimHandler(claimDeps, taskScope))
@@ -119,8 +132,6 @@ func NewHandler(
 		HandlerFunc(ReleaseClaimHandler(claimDeps, repoScope))
 	api.Path("/repos/{owner}/{repo}/claim").Methods(http.MethodGet).
 		HandlerFunc(ReadClaimHandler(claimDeps, repoScope))
-
-	return router
 }
 
 func handleReadiness(index *vaultapi.Index) http.HandlerFunc {

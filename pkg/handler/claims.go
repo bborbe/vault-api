@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -541,4 +542,202 @@ func writeClaimError(w http.ResponseWriter, err error, renew bool) {
 		return
 	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "claim_write_failed"})
+}
+
+// claimsPrefix is the ref prefix every claim lives under. It is the whole
+// namespace, not one scope: a listing that had to be asked per scope would need
+// three calls to answer the one question it exists for.
+const claimsPrefix = "claims/"
+
+// refsPrefix is the leading path segment git-rest puts in front of every ref it
+// reports, and which the keys this package builds do not carry.
+const refsPrefix = "refs/"
+
+// ClaimSummary is one claim as the listing reports it.
+//
+// It carries claimResponse's identity fields plus task_id, and it deliberately
+// omits the transport key: the key is this API's business, never the caller's.
+// A caller addresses a claim by scope and id, which is exactly what the renew
+// and release routes accept — so a listed claim is actionable without the caller
+// ever learning how it is stored.
+//
+// task_id is the field that makes the listing worth having. A repository claim
+// belongs to no task, so the claiming run's own task identifier is what the
+// transport stores; a restarting executor groups its claims by it to recover one
+// run's holdings together rather than key by key.
+type ClaimSummary struct {
+	Scope       string `json:"scope"`
+	ID          string `json:"id"`
+	Holder      string `json:"holder"`
+	TaskID      string `json:"task_id"`
+	LeaseUntil  string `json:"lease_until"`
+	RenewBefore string `json:"renew_before"`
+	LeaseToken  string `json:"lease_token"`
+}
+
+// ClaimListResponse is the body of GET /api/v1/claims.
+//
+// It carries no index_age_seconds, unlike the task and goal listings: claims are
+// read live from git-rest and no index describes them, so an age here would be a
+// fabricated number a caller could gate on. Skipped counts refs under the claims
+// prefix that are not addressable claims — counted rather than dropped, for the
+// same reason the task index counts unparsable pages instead of coercing them.
+type ClaimListResponse struct {
+	Items   []ClaimSummary `json:"items"`
+	Total   int            `json:"total"`
+	Skipped int            `json:"skipped"`
+}
+
+// claimScopeFromKey parses a claim key back into its typed address. It is the
+// inverse of taskClaimScope, repoClaimScope and the executor's per-PR
+// derivation.
+//
+// ⚠️ This inverse is computable only because the components are
+// slash-separated. Under the earlier hyphen join, "claims/repo/a-b-c" could not
+// be split back into an owner and a repo at all — the same lossiness that made
+// the lock exclude nothing also made a listing unable to return an addressable
+// id. That is why this route was sequenced after the key repair rather than
+// alongside it: a listing of unaddressable claims answers nothing.
+//
+// A key that is not one of the three claim shapes is reported as not a claim.
+// The redrive streak keys (claims/redrive/<taskid>/<phase>/<n>) land here: they
+// live under the same prefix but are counters, never acquired or released, so
+// answering them as claims would invite a caller to renew something that is not
+// a lock.
+func claimScopeFromKey(key string) (ClaimScope, bool) {
+	switch {
+	case strings.HasPrefix(key, "claims/task/"):
+		id := strings.TrimPrefix(key, "claims/task/")
+		if id == "" {
+			return ClaimScope{}, false
+		}
+		return ClaimScope{Scope: "task", ID: id, Key: key}, true
+	case strings.HasPrefix(key, "claims/repo/"):
+		parts := strings.Split(strings.TrimPrefix(key, "claims/repo/"), "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return ClaimScope{}, false
+		}
+		return ClaimScope{Scope: "repo", ID: parts[0] + "/" + parts[1], Key: key}, true
+	case strings.HasPrefix(key, "claims/pr/"):
+		parts := strings.Split(strings.TrimPrefix(key, "claims/pr/"), "/")
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return ClaimScope{}, false
+		}
+		return ClaimScope{
+			Scope: "pr",
+			ID:    parts[0] + "/" + parts[1] + "/" + parts[2],
+			Key:   key,
+		}, true
+	}
+	return ClaimScope{}, false
+}
+
+// ListClaimsHandler enumerates claims, optionally narrowed to one holder.
+//
+// The route exists because a claim surface that can only be read one key at a
+// time cannot answer the question a restarting executor actually asks: which
+// claims do I already hold? Without it, an executor that restarts cannot see the
+// refs it left behind and has to wait out every lease instead of re-adopting or
+// fencing its own work.
+//
+// Filtering by holder is a convenience, not a security boundary: the gateway
+// secret is what separates callers, and a holder that names someone else simply
+// sees someone else's claims. It is offered because the caller's own filter is
+// the common case and doing it server-side keeps the response small.
+//
+// An expired claim is reported with its stored lease_until rather than flagged
+// or omitted. Expiry is a comparison against the caller's own clock, and
+// computing it here would bake this server's clock into an answer that goes
+// stale the moment it is sent — the caller already has lease_until and knows
+// what now is.
+func ListClaimsHandler(deps ClaimDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		holder, ok := claimListHolder(w, r)
+		if !ok {
+			return
+		}
+		refs, err := deps.Refs.ListClaimRefs(r.Context(), claimsPrefix)
+		if err != nil {
+			writeJSON(
+				w,
+				http.StatusInternalServerError,
+				map[string]string{"error": "claim_read_failed"},
+			)
+			return
+		}
+		items, skipped := claimSummaries(refs, holder)
+		writeJSON(w, http.StatusOK, ClaimListResponse{
+			Items:   items,
+			Total:   len(items),
+			Skipped: skipped,
+		})
+	}
+}
+
+// claimListHolder reads the listing's only filter, answering the request itself
+// when the query is unusable. ok is false once a response has been written.
+func claimListHolder(w http.ResponseWriter, r *http.Request) (string, bool) {
+	query := r.URL.Query()
+	for name := range query {
+		if name != "holder" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "unknown_filter",
+				"filter": name,
+			})
+			return "", false
+		}
+		// A declared filter sent with an empty value is refused rather than
+		// treated as unset: `?holder=` reads as "narrow to nothing" and returning
+		// every claim instead is the silent widening the task listing's own
+		// empty-value branch exists to prevent.
+		if query.Get(name) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "invalid_filter",
+				"filter": name,
+				"reason": "a filter must carry a value; omit the parameter to leave it unset",
+			})
+			return "", false
+		}
+	}
+	return query.Get("holder"), true
+}
+
+// claimSummaries projects transport refs onto the listing and counts the refs
+// that are not addressable claims.
+func claimSummaries(refs []gitrest.ClaimRef, holder string) ([]ClaimSummary, int) {
+	items := make([]ClaimSummary, 0, len(refs))
+	skipped := 0
+	for _, ref := range refs {
+		claimed, ok := claimScopeFromKey(strings.TrimPrefix(ref.Ref, refsPrefix))
+		if !ok {
+			// Counted whether or not a holder filter is active: a ref that is not
+			// a claim is not a claim for anybody, and a filter that hid the count
+			// would make an unexpected key shape invisible exactly when someone
+			// is looking.
+			skipped++
+			continue
+		}
+		if holder != "" && ref.Cluster != holder {
+			continue
+		}
+		items = append(items, ClaimSummary{
+			Scope:       claimed.Scope,
+			ID:          claimed.ID,
+			Holder:      ref.Cluster,
+			TaskID:      ref.TaskID,
+			LeaseUntil:  ref.LeaseUntil,
+			RenewBefore: renewBefore(ref.LeaseUntil),
+			LeaseToken:  ref.SHA,
+		})
+	}
+	// Sorted by scope then id so the order is a property of the claims, not of
+	// git-rest's ref iteration. A caller diffing two listings — which is what a
+	// recovery loop does — must not see churn that is only ordering.
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Scope != items[j].Scope {
+			return items[i].Scope < items[j].Scope
+		}
+		return items[i].ID < items[j].ID
+	})
+	return items, skipped
 }
