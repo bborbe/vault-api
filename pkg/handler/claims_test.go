@@ -114,6 +114,15 @@ var _ = Describe("Claim handlers", func() {
 			HandlerFunc(handler.ReadClaimHandler(deps, repoScope))
 		api.Path("/claims").Methods(http.MethodGet).
 			HandlerFunc(handler.ListClaimsHandler(deps))
+		prScope := handler.PRClaimScope()
+		api.Path("/repos/{owner}/{repo}/pulls/{number}/claim").Methods(http.MethodPost).
+			HandlerFunc(handler.AcquireClaimHandler(deps, prScope))
+		api.Path("/repos/{owner}/{repo}/pulls/{number}/claim/renew").Methods(http.MethodPost).
+			HandlerFunc(handler.RenewClaimHandler(deps, prScope))
+		api.Path("/repos/{owner}/{repo}/pulls/{number}/claim").Methods(http.MethodDelete).
+			HandlerFunc(handler.ReleaseClaimHandler(deps, prScope))
+		api.Path("/repos/{owner}/{repo}/pulls/{number}/claim").Methods(http.MethodGet).
+			HandlerFunc(handler.ReadClaimHandler(deps, prScope))
 		return r
 	}
 
@@ -419,6 +428,102 @@ var _ = Describe("Claim handlers", func() {
 			router.ServeHTTP(recorder, request.WithContext(ctx))
 			Expect(recorder.Code).To(Equal(http.StatusNoContent))
 			Expect(refs.lastDelete).To(Equal("held-sha"))
+		})
+	})
+
+	Describe("per-PR claim", func() {
+		acquire := func(path string, body string) {
+			request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+		}
+
+		It("claims the pull request, not the whole repository", func() {
+			acquire(
+				"/api/v1/repos/bborbe/git-rest/pulls/7/claim",
+				`{"holder":"nukedev","ttl_seconds":300,"task_id":"task-9"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastKey).To(Equal("claims/pr/bborbe/git-rest/7"))
+			Expect(decode()["scope"]).To(Equal("pr"))
+			Expect(decode()["id"]).To(Equal("bborbe/git-rest/7"))
+		})
+
+		It("sends the caller's task id to the transport, never the claim's own address", func() {
+			// The regression this exists for: with the task-id mapping written as
+			// `scope != "repo"`, a per-PR claim sent "bborbe/git-rest/7" as the task
+			// id. Recover pairs a repo claim with its per-PR claim BY TASK ID, so a
+			// bogus id makes the pair read as two unrelated singles.
+			acquire(
+				"/api/v1/repos/bborbe/git-rest/pulls/7/claim",
+				`{"holder":"nukedev","task_id":"task-9"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastPut.TaskID).To(Equal("task-9"))
+			Expect(refs.lastPut.TaskID).NotTo(Equal("bborbe/git-rest/7"))
+		})
+
+		It("refuses a per-PR claim that carries no task id", func() {
+			acquire("/api/v1/repos/bborbe/git-rest/pulls/7/claim", `{"holder":"nukedev"}`)
+
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode()["error"]).To(Equal("missing_task_id"))
+		})
+
+		It("lowercases owner and repo but leaves the number alone, as the executor does", func() {
+			acquire(
+				"/api/v1/repos/BBorbe/Git-Rest/pulls/7/claim",
+				`{"holder":"nukedev","task_id":"task-9"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastKey).To(Equal("claims/pr/bborbe/git-rest/7"))
+		})
+
+		It("refuses a number outside the claim component set rather than inventing a key", func() {
+			// The executor validates the number as a claim component, not as an
+			// integer, and does not lowercase it. Uppercase is therefore rejected on
+			// both sides; accepting it here would split the key space.
+			acquire(
+				"/api/v1/repos/bborbe/git-rest/pulls/7X/claim",
+				`{"holder":"nukedev","task_id":"task-9"}`,
+			)
+
+			Expect(recorder.Code).To(Equal(http.StatusNotFound))
+			Expect(decode()["error"]).To(Equal("not_found"))
+		})
+
+		It("renews and releases the per-PR claim through its own address", func() {
+			refs.refs = []gitrest.ClaimRef{
+				{
+					Ref:        "refs/claims/pr/bborbe/git-rest/7",
+					SHA:        "pr-sha",
+					Cluster:    "nukedev",
+					TaskID:     "task-9",
+					LeaseUntil: "2026-10-25T12:05:00Z",
+				},
+			}
+
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/api/v1/repos/bborbe/git-rest/pulls/7/claim",
+				nil,
+			)
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode()["lease_token"]).To(Equal("pr-sha"))
+
+			recorder = httptest.NewRecorder()
+			request = httptest.NewRequest(
+				http.MethodDelete,
+				"/api/v1/repos/bborbe/git-rest/pulls/7/claim",
+				bytes.NewBufferString(`{"lease_token":"pr-sha"}`),
+			)
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+			Expect(recorder.Code).To(Equal(http.StatusNoContent))
+			Expect(refs.lastKey).To(Equal("claims/pr/bborbe/git-rest/7"))
+			Expect(refs.lastDelete).To(Equal("pr-sha"))
 		})
 	})
 

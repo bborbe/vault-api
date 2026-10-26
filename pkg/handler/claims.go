@@ -139,6 +139,38 @@ func repoClaimScope(owner string, repo string) (ClaimScope, bool) {
 	}, true
 }
 
+// prClaimScope builds the claim address for one pull request.
+//
+// A per-PR claim is what lets two reviews of the same repository run at once:
+// the repository key alone serialises every review of a repository, so a second
+// PR's review waits behind the first for as long as it renews. The per-PR key
+// narrows the lock to the pull request, and the executor pairs the two — it
+// holds both, and recovers them together by task id.
+//
+// ⚠️ The derivation reproduces agent-task-executor's DeriveClaimKeysWithBody
+// exactly, including two details that look like accidents and are not:
+//
+//   - owner and repo are lowercased, the number is NOT. The executor lowercases
+//     only the first two; the number comes from the pull-request body and is
+//     validated as-is, so lowercasing it here would accept an input the executor
+//     rejects and split the key space between the two services.
+//   - the number is validated as a claim component, not parsed as an integer.
+//     The executor runs validateClaimComponent over it, so a stricter integer
+//     check here would refuse a key the executor can write.
+func prClaimScope(owner string, repo string, number string) (ClaimScope, bool) {
+	owner = strings.ToLower(owner)
+	repo = strings.ToLower(repo)
+	if !validClaimComponent(owner) || !validClaimComponent(repo) ||
+		!validClaimComponent(number) {
+		return ClaimScope{}, false
+	}
+	return ClaimScope{
+		Scope: "pr",
+		ID:    owner + "/" + repo + "/" + number,
+		Key:   "claims/pr/" + owner + "/" + repo + "/" + number,
+	}, true
+}
+
 // validClaimComponent reports whether a name can be part of a claim key. The
 // transport refuses anything outside this set anyway; checking here answers for
 // an object that cannot exist instead of proxying the transport's refusal.
@@ -174,6 +206,15 @@ func RepoClaimScope() func(*http.Request) (ClaimScope, bool) {
 	return func(r *http.Request) (ClaimScope, bool) {
 		vars := mux.Vars(r)
 		return repoClaimScope(vars["owner"], vars["repo"])
+	}
+}
+
+// PRClaimScope resolves {owner}, {repo} and {number} to a per-PR claim scope.
+// Like a repository, a pull request needs no index entry to be claimed.
+func PRClaimScope() func(*http.Request) (ClaimScope, bool) {
+	return func(r *http.Request) (ClaimScope, bool) {
+		vars := mux.Vars(r)
+		return prClaimScope(vars["owner"], vars["repo"], vars["number"])
 	}
 }
 
@@ -354,13 +395,21 @@ func claimRequestError(request claimRequest, renew bool) string {
 
 // claimTransportTaskID is the task id the transport requires on every ref write.
 // A task claim uses the addressed task, never a caller-supplied id; a repository
-// has no task of its own, so the claiming run supplies one.
+// and a pull request have no task of their own, so the claiming run supplies one.
+//
+// ⚠️ The test is "is this a task claim", not "is this not a repository claim".
+// Written the other way round — `if scope != "repo"` — adding the per-PR scope
+// would have sent the claim's own address, "owner/repo/7", to the transport as a
+// task id. That writes a claim whose task_id is not a task, and it breaks the
+// executor's recovery silently: Recover pairs a repository claim with its per-PR
+// claim by task id, so a bogus id makes the pair read as two unrelated singles
+// that are then adopted, fenced or released separately.
 func claimTransportTaskID(
 	w http.ResponseWriter,
 	claimed ClaimScope,
 	request claimRequest,
 ) (string, bool) {
-	if claimed.Scope != "repo" {
+	if claimed.Scope == "task" {
 		return claimed.ID, true
 	}
 	if request.TaskID == "" {
