@@ -357,7 +357,7 @@ var _ = Describe("Claim handlers", func() {
 		It("addresses the claim by owner and repo, and requires the run's task id", func() {
 			post("/api/v1/repos/bborbe/git-rest/claim", `{"holder":"nukedev","task_id":"run-1"}`)
 			Expect(recorder.Code).To(Equal(http.StatusCreated))
-			Expect(refs.lastKey).To(Equal("claims/repo/bborbe-git-rest"))
+			Expect(refs.lastKey).To(Equal("claims/repo/bborbe/git-rest"))
 			Expect(refs.lastPut.TaskID).To(Equal("run-1"))
 			Expect(decode()["scope"]).To(Equal("repo"))
 			Expect(decode()["id"]).To(Equal("bborbe/git-rest"))
@@ -368,7 +368,7 @@ var _ = Describe("Claim handlers", func() {
 			// hyphen; a second spelling here would be a second lock.
 			post("/api/v1/repos/BBorbe/Git-Rest/claim", `{"holder":"nukedev","task_id":"run-1"}`)
 			Expect(recorder.Code).To(Equal(http.StatusCreated))
-			Expect(refs.lastKey).To(Equal("claims/repo/bborbe-git-rest"))
+			Expect(refs.lastKey).To(Equal("claims/repo/bborbe/git-rest"))
 			Expect(decode()["id"]).To(Equal("bborbe/git-rest"))
 		})
 
@@ -387,7 +387,7 @@ var _ = Describe("Claim handlers", func() {
 
 		It("renews, reads and releases the same repository claim", func() {
 			refs.refs = []gitrest.ClaimRef{{
-				Ref:        "refs/claims/repo/bborbe-git-rest",
+				Ref:        "refs/claims/repo/bborbe/git-rest",
 				SHA:        "held-sha",
 				Cluster:    "sun",
 				LeaseUntil: "2026-10-25T12:05:00Z",
