@@ -38,10 +38,10 @@ type TaskItem struct {
 }
 
 // IsTerminalStatus reports whether a task status ends the task's life. The vault
-// has exactly two, and this is the one definition of them: the index uses it to
-// decide what a "live" task is (duplicate detection), and the create route uses it
-// to decide whether an occupying task may be reopened. A second copy of this
-// predicate is how the two answers drift apart.
+// has exactly two, and this is the one definition of them: the open-task gauge
+// uses it to decide what counts as open (openTasksByState), and the create route
+// uses it to decide whether an occupying task may be reopened. A second copy of
+// this predicate is how the two answers drift apart.
 func IsTerminalStatus(status string) bool {
 	return status == "completed" || status == "aborted"
 }

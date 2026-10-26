@@ -179,6 +179,13 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if document.item.ID == next {
+			// Already addressed that way: a retry of the same move is a no-op, not
+			// a collision with itself. Answering 409 here would make the verb
+			// non-idempotent for a caller that re-sends it.
+			writeJSON(w, http.StatusOK, document.view())
+			return
+		}
 		if occupant, found, _ := deps.index.GetTask(next); found {
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"error":           "task_exists",
@@ -378,7 +385,16 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			// nothing it did not already know, and could not tell "same task,
 			// terminal, reopen" from "different task, disambiguate the title"
 			// without a second read it had no address for.
-			occupant, found, _ := deps.index.GetTask(title)
+			// ⚠️ Resolved by PATH, never through index.GetTask(title). That is a
+			// shared address space — identifier, name and slug all resolve there —
+			// so a page whose task_identifier equals this title wins the lookup,
+			// and this branch would then judge ITS status and overwrite the file at
+			// `path`, which belongs to a different task. Reachable through the API
+			// in three calls: create "Bravo" carrying task_identifier "Alpha" (its
+			// file is Bravo.md, so nothing collides), create "Alpha" carrying
+			// task_identifier "task-1", then reopen "Alpha" — GetTask resolves to
+			// Bravo, reads its terminal status, and a 200 replaces the live Alpha.md.
+			occupant, found := occupantAtPath(ctx, deps, title)
 			if !found || request.Reopen != reopenTerminal {
 				writeTaskExists(w, path, occupant, found)
 				return
@@ -421,6 +437,35 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			Body:        request.Body,
 		})
 	}
+}
+
+// occupantAtPath reads the page that actually occupies a title path and returns
+// its identifier and status.
+//
+// ⚠️ It deliberately does not use index.GetTask(title): that resolves identifier,
+// name and slug in one key space, so a page whose task_identifier happens to equal
+// this title shadows the real occupant. Judging the shadow's status and then
+// writing the path would destroy a live task — the sequence is spelled out at the
+// call site. Reading the page the caller is about to overwrite is the only
+// answer that cannot be shadowed.
+func occupantAtPath(
+	ctx context.Context,
+	deps writeDeps,
+	title string,
+) (vaultapi.TaskItem, bool) {
+	page, err := deps.store.ReadPage(ctx, deps.vaultPath, deps.tasksDir, title)
+	if err != nil {
+		return vaultapi.TaskItem{}, false
+	}
+	frontmatter, err := storage.ParseFrontmatterMap(ctx, []byte(string(page.Content)))
+	if err != nil {
+		return vaultapi.TaskItem{}, false
+	}
+	return vaultapi.TaskItem{
+		ID:     fmt.Sprint(frontmatter["task_identifier"]),
+		Title:  title,
+		Status: fmt.Sprint(frontmatter["status"]),
+	}, true
 }
 
 // writeTaskExists answers a create that collided, naming the occupant rather than
