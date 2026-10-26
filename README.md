@@ -10,10 +10,15 @@ Typed read API over an Obsidian vault working tree. It serves typed tasks and go
 | `GET /api/v1/tasks/{id}` | One task by `task_identifier` or filename slug; 422 when its frontmatter is invalid |
 | `GET /api/v1/goals` | List goals |
 | `GET /api/v1/goals/{id}` | One goal by `goal_identifier` or filename slug |
+| `GET /api/v1/claims` | List claims; filter `holder` |
+| `GET/POST/DELETE /api/v1/tasks/{id}/claim` | Read, acquire or release a task claim |
+| `GET/POST/DELETE /api/v1/repos/{owner}/{repo}/claim` | Read, acquire or release a repository claim |
 | `GET /readiness` | 200 with `vault`, `index_age_seconds`, `tree_age_seconds`, `head`, `warnings`; 503 until the first index build, and again whenever either freshness signal leaves `--stale-after` |
 | `GET /healthz`, `/metrics`, `/setloglevel/{level}`, `/gc` | Fleet admin endpoints |
 
 List responses carry `items`, `total`, `warnings` and `index_age_seconds`. A file whose frontmatter does not parse, or whose `status`/`phase` is present but not a known value, is excluded from list results and counted in `warnings` — never coerced.
+
+`GET /api/v1/claims` is the one list that reads live rather than from the index, so its envelope is `items`, `total` and `skipped` instead: there is no index whose age could describe a claim, and reporting one would be a number a caller might gate on. `skipped` counts refs under the `claims/` prefix that are not addressable claims — the redrive streak keys are counters, never acquired or released. A claim carries `scope`, `id`, `holder`, `task_id`, `lease_until`, `renew_before` and `lease_token`, and never the transport key: a caller addresses a claim by `scope` and `id`, which is what the renew and release routes accept.
 
 ## Readiness
 
