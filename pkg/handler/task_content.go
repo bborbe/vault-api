@@ -78,9 +78,14 @@ const reopenTerminal = "terminal"
 // writes `previous_assignee`; with these keys absent, a task's trigger budget
 // could never advance and an escalation could never record who it cleared.
 //
-// They are controller-owned, not operator-owned: no agent authors them, and the
-// agent-facing write surface is the result writer, which merges through its own
-// ownership guard before reaching this API.
+// They are controller-owned by CONVENTION, and that convention is enforced
+// outside this service — do not read the allowlist as an authorization boundary.
+// PATCH is protected only by the shared gateway secret on the /api/v1 subrouter
+// (handler.go), with no controller-versus-agent distinction, and agents hold that
+// secret. What keeps an agent from writing these keys is the result writer in
+// agent-task-controller, which merges agent payloads through its own
+// `controllerOwnedFields` guard before the command ever reaches this API. This
+// service cannot verify that claim, so it is stated as the assumption it is.
 var typedTaskFields = map[string]bool{
 	"status":       true,
 	"phase":        true,

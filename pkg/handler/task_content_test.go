@@ -228,6 +228,38 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(BeEmpty())
 		})
 
+		// ⚠️ Table-driven on purpose: `fieldRefusal` discards the WHOLE request on a
+		// single unknown key, so losing one entry from the allowlist silently
+		// reintroduces the original bug for that key and nothing else fails. Each row
+		// proves its key is admitted AND written, not merely not-refused.
+		DescribeTable(
+			"accepts each controller-owned key",
+			func(body, key string, want any) {
+				seed("task_identifier: task-1\nstatus: in_progress\nphase: planning\n")
+				recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", body)
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				frontmatter, ok := decode(recorder)["frontmatter"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(frontmatter).To(HaveKey(key))
+				Expect(frontmatter[key]).To(BeEquivalentTo(want))
+				Expect(writer.calls).To(HaveLen(1))
+			},
+			Entry("ref", `{"ref":"deadbeef"}`, "ref", "deadbeef"),
+			Entry("max_triggers", `{"max_triggers":2}`, "max_triggers", 2),
+			Entry("retry_count", `{"retry_count":1}`, "retry_count", 1),
+			Entry("trigger_count", `{"trigger_count":3}`, "trigger_count", 3),
+			Entry("trigger_scope", `{"trigger_scope":"planning"}`, "trigger_scope", "planning"),
+			Entry("previous_assignee", `{"previous_assignee":"a"}`, "previous_assignee", "a"),
+			Entry("current_job", `{"current_job":"job-1"}`, "current_job", "job-1"),
+			Entry(
+				"job_started_at",
+				`{"job_started_at":"2026-10-28T12:41:12Z"}`,
+				"job_started_at",
+				"2026-10-28T12:41:12Z",
+			),
+			Entry("spawn_notification", `{"spawn_notification":true}`, "spawn_notification", true),
+		)
+
 		It("runs a status change through the transition graph", func() {
 			// planning is the only phase a task may leave for execution, so a jump
 			// straight to done from a task that never entered planning is refused.
