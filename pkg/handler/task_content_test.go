@@ -396,6 +396,23 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(decode(recorder)["id"]).NotTo(BeEmpty())
 		})
 
+		// The create route shares the PATCH allowlist, so it accepts the pipeline
+		// keys too. That is deliberate rather than incidental: the controller's
+		// create executor stamps target_vault, and max_triggers is documented as
+		// something only a task's own create sets.
+		It("accepts an agent-pipeline key on create, which the controller sends", func() {
+			Expect(index.Build(ctx, store())).To(Succeed())
+			recorder := call(
+				http.MethodPost,
+				"/api/v1/tasks",
+				`{"title":"Bravo","frontmatter":{"status":"in_progress","target_vault":"personal","max_triggers":3},"body":"hello\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring("target_vault: personal"))
+			Expect(writer.calls[0].content).To(ContainSubstring("max_triggers: 3"))
+		})
+
 		It("answers 409 task_exists when the title is already taken", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(http.MethodPost, "/api/v1/tasks", `{"title":"Alpha"}`)

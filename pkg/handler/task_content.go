@@ -64,11 +64,17 @@ type createRequest struct {
 // task whose status is terminal, and refuse every other occupant.
 const reopenTerminal = "terminal"
 
-// typedTaskFields is the frontmatter a PATCH may name. It is an allowlist rather
-// than a denylist because the alternative — accept anything the caller sends —
-// lets a client write keys this API does not model and cannot validate, which is
-// the drift the typed surface exists to stop. Approval is deliberately absent:
-// approved_by and approved_at are written by the approve endpoint alone.
+// typedTaskFields is the subset of frontmatter this API validates and reasons
+// about — the keys whose values it checks against a transition graph, a
+// normalised vocabulary or a rule. It is not the whole of what a write may name:
+// the agent pipeline's own keys are accepted too, through agentPipelineFields
+// below, and the two are kept apart deliberately (see that map's comment).
+//
+// It is an allowlist rather than a denylist because the alternative — accept
+// anything the caller sends — lets a client write keys this API does not model
+// and cannot validate, which is the drift the typed surface exists to stop.
+// Approval is deliberately absent: approved_by and approved_at are written by
+// the approve endpoint alone.
 var typedTaskFields = map[string]bool{
 	"status":       true,
 	"phase":        true,
