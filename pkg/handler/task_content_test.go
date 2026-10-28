@@ -202,6 +202,36 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls[0].content).To(ContainSubstring("trigger_scope: 'planning:'"))
 		})
 
+		// One row per entry in agentPipelineFields. A misspelled map key fails
+		// closed — 400 unknown_field — so without this a typo would pass every
+		// other test here and only break the controller at runtime.
+		It("accepts every agent-pipeline key, not just the three the redrive sends", func() {
+			values := map[string]string{
+				"trigger_scope":      `"planning:"`,
+				"trigger_count":      `1`,
+				"max_triggers":       `3`,
+				"current_job":        `"job-1"`,
+				"job_started_at":     `"2026-10-28T10:00:00Z"`,
+				"spawn_notification": `true`,
+				"queued_at":          `"2026-10-28T10:00:00Z"`,
+				"aborted_reason":     `"cap reached"`,
+				"gate_successor":     `"none"`,
+				"target_vault":       `"personal"`,
+				"previous_assignee":  `"bborbe"`,
+			}
+			for key, value := range values {
+				seed("task_identifier: task-1\nstatus: in_progress\n")
+				recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"`+key+`":`+value+`}`)
+				Expect(recorder.Code).To(
+					Equal(http.StatusOK), key+" must be accepted by PATCH",
+				)
+				Expect(writer.calls).NotTo(BeEmpty(), key)
+				Expect(writer.calls[len(writer.calls)-1].content).To(
+					ContainSubstring(key+":"), key+" must reach the written file",
+				)
+			}
+		})
+
 		It("still refuses a key in neither set, so the drift control survives", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(

@@ -287,8 +287,9 @@ func fieldRefusal(
 }
 
 // patchFields is the frontmatter a PATCH may name: the typed surface plus the
-// keys the agent pipeline owns. The two stay separate maps so the distinction
-// survives at the call site; only the refusal consults their union.
+// keys the agent pipeline owns, unioned once at init. The call site below is
+// handed this flat map, not the two sets — the typed/pipeline distinction lives
+// at the two declarations above, not at the refusal.
 var patchFields = unionFields(typedTaskFields, agentPipelineFields)
 
 // patchFieldRefusal answers the request itself when a named field may not be
