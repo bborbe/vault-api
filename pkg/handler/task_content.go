@@ -69,6 +69,18 @@ const reopenTerminal = "terminal"
 // lets a client write keys this API does not model and cannot validate, which is
 // the drift the typed surface exists to stop. Approval is deliberately absent:
 // approved_by and approved_at are written by the approve endpoint alone.
+//
+// ⚠️ The budget and spawn keys are here because the task controller and executor
+// write them through this route, and `fieldRefusal` refuses the WHOLE request when
+// any named key is outside the set — so a missing key does not drop one field, it
+// discards the entire write. Measured 2026-10-28 on dev: the executor's spawn
+// charge carries `trigger_count` and `trigger_scope` together, and the escalation
+// writes `previous_assignee`; with these keys absent, a task's trigger budget
+// could never advance and an escalation could never record who it cleared.
+//
+// They are controller-owned, not operator-owned: no agent authors them, and the
+// agent-facing write surface is the result writer, which merges through its own
+// ownership guard before reaching this API.
 var typedTaskFields = map[string]bool{
 	"status":       true,
 	"phase":        true,
@@ -88,6 +100,20 @@ var typedTaskFields = map[string]bool{
 	"planned_date": true,
 	"start_date":   true,
 	"blocked_by":   true,
+	// Budget counters and their scope. `triggerBudgetWrite` writes trigger_count
+	// and trigger_scope in one command; accepting only one would split the pair.
+	"trigger_count": true,
+	"trigger_scope": true,
+	"max_triggers":  true,
+	"retry_count":   true,
+	// Escalation and spawn bookkeeping, written by the controller's escalation
+	// gates and the executor's spawn notification.
+	"previous_assignee":  true,
+	"current_job":        true,
+	"job_started_at":     true,
+	"spawn_notification": true,
+	// The review target. Set at create, re-pointed by the controller.
+	"ref": true,
 }
 
 // view renders the document as the typed read.

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`PATCH /tasks/{id}` now accepts the task controller's budget and spawn keys, which it had been refusing wholesale.** `fieldRefusal` rejects the **entire request** with `400 unknown_field` when any named key is outside `typedTaskFields`, so a missing key never dropped one field — it discarded the write. `trigger_count`, `trigger_scope`, `max_triggers`, `retry_count`, `previous_assignee`, `current_job`, `job_started_at`, `spawn_notification` and `ref` are now allowed. Measured on dev 2026-10-28: the executor's spawn charge carries `trigger_count` and `trigger_scope` together (`triggerBudgetWrite`'s scope-write arm) and the trigger-cap escalation writes `previous_assignee`; with those absent a task's trigger budget could never advance and an escalation could never record who it cleared, so the retry cap could not be reached by the path that reaches it in practice. The pair is accepted together deliberately — accepting one half would advance the count with no scope, and the next spawn would re-take the scope arm and re-derive it. These keys are controller-owned: no agent authors them, and the agent-facing write surface is the result writer, which merges through its own ownership guard before reaching this API.
+
 ## v0.21.0
 
 - feat: **`POST /tasks` can replace a terminal task in place, and a new `POST /tasks/{id}/readdress` moves a task's identifier without moving its file.** Both exist for the controller's remaining call sites, and both were blocked on capability rather than effort: the create route answered `409` for every occupant and had no branch for a terminal one, and `PATCH` refuses `task_identifier` by design, so a retry that mints a new identifier had no route at all.

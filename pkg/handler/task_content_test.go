@@ -184,6 +184,40 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(BeEmpty(), "a refused field must not be written")
 		})
 
+		It(
+			"accepts the executor's spawn charge, which writes the count and scope together",
+			func() {
+				// The pair is one command from triggerBudgetWrite. Accepting only one
+				// half would split it, and the count would advance with no scope.
+				seed("task_identifier: task-1\nstatus: in_progress\nphase: planning\n")
+				recorder := call(
+					http.MethodPatch,
+					"/api/v1/tasks/task-1",
+					`{"trigger_count":3,"trigger_scope":"planning"}`,
+				)
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				frontmatter, ok := decode(recorder)["frontmatter"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(frontmatter["trigger_count"]).To(BeNumerically("==", 3))
+				Expect(frontmatter["trigger_scope"]).To(Equal("planning"))
+				Expect(writer.calls).To(HaveLen(1))
+			},
+		)
+
+		It("accepts the escalation's previous_assignee alongside the cleared assignee", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\nassignee: pr-reviewer-agent\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"assignee":"","previous_assignee":"pr-reviewer-agent"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			frontmatter, ok := decode(recorder)["frontmatter"].(map[string]any)
+			Expect(ok).To(BeTrue())
+			Expect(frontmatter["assignee"]).To(Equal(""))
+			Expect(frontmatter["previous_assignee"]).To(Equal("pr-reviewer-agent"))
+		})
+
 		It("refuses the approval record, which the approve endpoint owns", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(
