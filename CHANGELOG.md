@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.2
 
 - fix: **`planning` and `execution` may now move to `human_review` directly.** `phaseEdges` admitted only `ai_review → human_review`, so a parked record could not be moved to a human at all: the park writes `phase: human_review` from whatever phase the record is stuck in, and every such write was refused `409 invalid_transition` — measured on dev 2026-10-28, tasks `81192840…` (at `planning`) and `b8364a84…` (at `execution`), each re-parked on the next pass because the write never landed.
   ⚠️ **This is not a shortcut around review.** The `ai_review → human_review` edge stays for the ordinary case, where a review really ran. The new edges exist for the park, which is the *absence* of progress rather than the end of it — routing a parked record through `ai_review` first would assert a review that never happened.
