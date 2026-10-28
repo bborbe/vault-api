@@ -122,6 +122,7 @@ var agentPipelineFields = map[string]bool{
 	"gate_successor":     true, // PublishAbort
 	"target_vault":       true, // the controller's routing field, healed on write
 	"previous_assignee":  true, // trigger-cap escalation
+	"retry_count":        true, // the probe path's spawn-time bump, reset to 0 on reuse
 }
 
 // unionFields returns a fresh map holding every key of the given sets.

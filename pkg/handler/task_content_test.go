@@ -218,6 +218,7 @@ var _ = Describe("Task content endpoints", func() {
 				"gate_successor":     `"none"`,
 				"target_vault":       `"personal"`,
 				"previous_assignee":  `"bborbe"`,
+				"retry_count":        `0`,
 			}
 			for key, value := range values {
 				seed("task_identifier: task-1\nstatus: in_progress\n")
