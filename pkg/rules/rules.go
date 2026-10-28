@@ -70,9 +70,27 @@ func (r *RefusalError) Error() string {
 // phaseEdges is the legal phase graph. todo -> planning is deliberately absent:
 // leaving the approval inbox is an approval, not an edit, so it is reachable
 // only through the approve endpoint.
+//
+// planning and execution reach human_review directly, and that edge is not a
+// shortcut around review. It exists for the park: a record the redrive cap has
+// stopped driving needs a human now, from whatever phase it happens to be in.
+// Routing it through ai_review first would assert that an AI review took place
+// when none did — the park is the absence of progress, not the end of it. The
+// ai_review -> human_review edge stays for the ordinary case, where a review
+// really did run.
+//
+// planning -> ai_review stays absent on purpose: a record that has never left
+// planning has nothing to review yet.
 var phaseEdges = map[domain.TaskPhase][]domain.TaskPhase{
-	domain.TaskPhasePlanning:    {domain.TaskPhaseExecution},
-	domain.TaskPhaseExecution:   {domain.TaskPhaseAIReview, domain.TaskPhasePlanning},
+	domain.TaskPhasePlanning: {
+		domain.TaskPhaseExecution,
+		domain.TaskPhaseHumanReview,
+	},
+	domain.TaskPhaseExecution: {
+		domain.TaskPhaseAIReview,
+		domain.TaskPhasePlanning,
+		domain.TaskPhaseHumanReview,
+	},
 	domain.TaskPhaseAIReview:    {domain.TaskPhaseHumanReview},
 	domain.TaskPhaseHumanReview: {domain.TaskPhaseDone},
 }
