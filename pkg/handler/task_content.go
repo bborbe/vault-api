@@ -123,6 +123,17 @@ var agentPipelineFields = map[string]bool{
 	"target_vault":       true, // the controller's routing field, healed on write
 	"previous_assignee":  true, // trigger-cap escalation
 	"retry_count":        true, // the probe path's spawn-time bump, reset to 0 on reuse
+
+	// Written by github-pr-watcher (pkg/watcher.go) into every pr-review task it
+	// creates, so they arrive on the CREATE path and were refused there. The
+	// executor/controller entries above never covered them because the watcher is
+	// a different producer: it is the only component that names the repo and the
+	// branch a review should diff against, and no other key carries that.
+	// Measured 2026-10-28: vault-api v0.21.2 took traffic at 19:59:57 and every
+	// pr-review create after that failed `400 unknown_field: base_ref`, so no PR
+	// on the fleet was being reviewed at all.
+	"base_ref":  true, // github-pr-watcher — the PR's base branch
+	"clone_url": true, // github-pr-watcher — the repo to clone for the review
 }
 
 // unionFields returns a fresh map holding every key of the given sets.

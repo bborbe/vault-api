@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`base_ref` and `clone_url` are accepted again, so `pr-review` tasks can be created at all.** `agentPipelineFields` was widened in v0.21.1 to stop refusing the fields the agent pipeline writes, but it covered only what `agent-task-executor` and `agent-task-controller` set — the two fields `github-pr-watcher` stamps into every review task it creates were never in any set. `createFields` derives from that union and `fieldRefusal` refuses the whole request on the first unknown key, so every `pr-review` create was rejected outright: measured 2026-10-28, `vault-api` v0.21.2 took traffic at `19:59:57` and from that minute on **no PR on the fleet was being reviewed**, each create failing `400 unknown_field: base_ref`.
+  ⚠️ **The two-record window is what proves it is a rollout skew rather than a latent bug.** `bborbe/helm#23`'s task was created at `19:55:51` and `bborbe/nuke#862`'s at `19:56:44` — after the new pod started (`19:51:07`) but before it took traffic — so exactly two creates succeeded and everything after them failed.
+  ⚠️ **Both keys are stored, not interpreted**, which is the same contract as the rest of this set: this API carries them without reasoning about what a base branch or a clone URL means. The drift control is unchanged — a key in neither set is still refused — so this widens the allowlist by exactly two measured keys, not into a pass-through.
+  ⚠️ **Not fixed by rolling back.** Dropping below v0.15.0 (where `fieldRefusal` first reached the create path) would also lose the `planning`/`execution → human_review` edges v0.21.2 added, which are what let a parked record be parked at all.
+
 ## v0.21.2
 
 - fix: **`planning` and `execution` may now move to `human_review` directly.** `phaseEdges` admitted only `ai_review → human_review`, so a parked record could not be moved to a human at all: the park writes `phase: human_review` from whatever phase the record is stuck in, and every such write was refused `409 invalid_transition` — measured on dev 2026-10-28, tasks `81192840…` (at `planning`) and `b8364a84…` (at `execution`), each re-parked on the next pass because the write never landed.

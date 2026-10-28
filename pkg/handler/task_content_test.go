@@ -219,6 +219,11 @@ var _ = Describe("Task content endpoints", func() {
 				"target_vault":       `"personal"`,
 				"previous_assignee":  `"bborbe"`,
 				"retry_count":        `0`,
+				// Written by github-pr-watcher on the CREATE path, not by the
+				// executor/controller. Their absence refused every pr-review
+				// create outright (400 unknown_field: base_ref, 2026-10-28).
+				"base_ref":  `"master"`,
+				"clone_url": `"https://github.com/bborbe/example.git"`,
 			}
 			for key, value := range values {
 				seed("task_identifier: task-1\nstatus: in_progress\n")
