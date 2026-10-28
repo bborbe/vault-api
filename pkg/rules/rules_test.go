@@ -48,14 +48,17 @@ var phaseCases = []phaseCase{
 	{domain.TaskPhasePlanning, domain.TaskPhasePlanning, false, rules.CodeInvalidTransition},
 	{domain.TaskPhasePlanning, domain.TaskPhaseExecution, true, ""},
 	{domain.TaskPhasePlanning, domain.TaskPhaseAIReview, false, rules.CodeInvalidTransition},
-	{domain.TaskPhasePlanning, domain.TaskPhaseHumanReview, false, rules.CodeInvalidTransition},
+	// The park writes human_review directly from whatever phase the record is
+	// stuck in, so both of these are legal. planning -> ai_review above stays
+	// forbidden: a record that never left planning has nothing to review.
+	{domain.TaskPhasePlanning, domain.TaskPhaseHumanReview, true, ""},
 	{domain.TaskPhasePlanning, domain.TaskPhaseDone, false, rules.CodeInvalidTransition},
 
 	{domain.TaskPhaseExecution, domain.TaskPhaseTodo, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseExecution, domain.TaskPhasePlanning, true, ""},
 	{domain.TaskPhaseExecution, domain.TaskPhaseExecution, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseExecution, domain.TaskPhaseAIReview, true, ""},
-	{domain.TaskPhaseExecution, domain.TaskPhaseHumanReview, false, rules.CodeInvalidTransition},
+	{domain.TaskPhaseExecution, domain.TaskPhaseHumanReview, true, ""},
 	{domain.TaskPhaseExecution, domain.TaskPhaseDone, false, rules.CodeInvalidTransition},
 
 	{domain.TaskPhaseAIReview, domain.TaskPhaseTodo, false, rules.CodeInvalidTransition},
@@ -128,8 +131,10 @@ var statusCases = []statusCase{
 // the graph must both agree with this list rather than with each other.
 var legalPhasePairs = []string{
 	"planning->execution",
+	"planning->human_review",
 	"execution->ai_review",
 	"execution->planning",
+	"execution->human_review",
 	"ai_review->human_review",
 	"human_review->done",
 }
@@ -153,7 +158,7 @@ var _ = Describe("ValidatePhaseTransition", func() {
 		))
 	})
 
-	It("allows exactly the five literal legal phase edges", func() {
+	It("allows exactly the seven literal legal phase edges", func() {
 		Expect(legalPairsOfPhases()).To(ConsistOf(legalPhasePairs))
 	})
 
@@ -175,7 +180,7 @@ var _ = Describe("ValidatePhaseTransition", func() {
 		Expect(refusal.Code).To(Equal(rules.CodeInvalidTransition))
 		Expect(refusal.From).To(Equal("planning"))
 		Expect(refusal.To).To(Equal("done"))
-		Expect(refusal.Allowed).To(Equal([]string{"execution"}))
+		Expect(refusal.Allowed).To(Equal([]string{"execution", "human_review"}))
 	})
 })
 

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`planning` and `execution` may now move to `human_review` directly.** `phaseEdges` admitted only `ai_review → human_review`, so a parked record could not be moved to a human at all: the park writes `phase: human_review` from whatever phase the record is stuck in, and every such write was refused `409 invalid_transition` — measured on dev 2026-10-28, tasks `81192840…` (at `planning`) and `b8364a84…` (at `execution`), each re-parked on the next pass because the write never landed.
+  ⚠️ **This is not a shortcut around review.** The `ai_review → human_review` edge stays for the ordinary case, where a review really ran. The new edges exist for the park, which is the *absence* of progress rather than the end of it — routing a parked record through `ai_review` first would assert a review that never happened.
+  ⚠️ **`planning → ai_review` stays forbidden**, and a case pins it: a record that has never left planning has nothing to review yet.
+
 ## v0.21.1
 
 - fix: **`PATCH /tasks/{id}` now accepts the frontmatter the agent pipeline writes, carried in a set separate from the typed one.** `typedTaskFields` refused `trigger_scope`, `trigger_count`, `current_job`, `job_started_at`, `spawn_notification`, `queued_at`, `aborted_reason`, `gate_successor`, `target_vault`, `previous_assignee`, `max_triggers` and `retry_count` with `400 unknown_field`, and because `fieldRefusal` refuses the whole request on the first unknown key, every write naming one of them failed entirely — measured live on dev 2026-10-28: `trigger_scope` at 15:08:20, `trigger_count` and `current_job` at 15:13:20. The cause was never payload width: the controller already PATCHes only the keys that changed (`agent-task-controller` `buildUpdatePatch`).
