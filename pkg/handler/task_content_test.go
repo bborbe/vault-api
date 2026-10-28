@@ -184,6 +184,34 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(BeEmpty(), "a refused field must not be written")
 		})
 
+		It("writes an agent-pipeline key, which this API stores but does not model", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"trigger_scope":"planning:","trigger_count":1,"current_job":"job-1"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			frontmatter, ok := decode(recorder)["frontmatter"].(map[string]any)
+			Expect(ok).To(BeTrue(), "the response carries the frontmatter as an object")
+			Expect(frontmatter["trigger_scope"]).To(Equal("planning:"))
+			Expect(frontmatter["current_job"]).To(Equal("job-1"))
+			Expect(writer.calls).To(HaveLen(1))
+			// The emitter quotes the value because it ends in a colon; asserting the
+			// quoted form keeps this a check on the write rather than on the encoder.
+			Expect(writer.calls[0].content).To(ContainSubstring("trigger_scope: 'planning:'"))
+		})
+
+		It("still refuses a key in neither set, so the drift control survives", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPatch, "/api/v1/tasks/task-1", `{"probe_unknown_field_zzz":"x"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("unknown_field"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
 		It("refuses the approval record, which the approve endpoint owns", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(
