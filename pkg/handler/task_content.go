@@ -124,16 +124,29 @@ var agentPipelineFields = map[string]bool{
 	"previous_assignee":  true, // trigger-cap escalation
 	"retry_count":        true, // the probe path's spawn-time bump, reset to 0 on reuse
 
-	// Written by github-pr-watcher (pkg/watcher.go) into every pr-review task it
-	// creates, so they arrive on the CREATE path and were refused there. The
-	// executor/controller entries above never covered them because the watcher is
-	// a different producer: it is the only component that names the repo and the
-	// branch a review should diff against, and no other key carries that.
-	// Measured 2026-10-28: vault-api v0.21.2 took traffic at 19:59:57 and every
-	// pr-review create after that failed `400 unknown_field: base_ref`, so no PR
-	// on the fleet was being reviewed at all.
-	"base_ref":  true, // github-pr-watcher — the PR's base branch
-	"clone_url": true, // github-pr-watcher — the repo to clone for the review
+	// Written by github-pr-watcher into every task it creates, and by the
+	// release watcher into every release task, so they arrive on the CREATE path
+	// and were refused there. The executor/controller entries above never covered
+	// them because those are different producers: the watchers are the only
+	// components that name the repo, the base branch and the commit a task is
+	// about, and no typed key carries any of that.
+	//
+	// ⚠️ fieldRefusal names ONE key and Go map iteration is random, so a create
+	// missing several reports a different field each attempt — measured
+	// 2026-10-28, the same outage logged `title` 9×, `clone_url` 5×, `base_ref`
+	// 5×, `ref` 4×, `repo` 1×, `current_version` 1×. Widening by the field named
+	// in one log line fixes one sixth of it; this list is the whole set.
+	"base_ref":        true, // the PR's base branch
+	"clone_url":       true, // the repo to clone
+	"ref":             true, // the commit under review / the release ref
+	"repo":            true, // owner/repo, on release tasks
+	"current_version": true, // the version a release task starts from
+	// title is ALSO a top-level create field that owns the filename. The
+	// pipeline sends it in the frontmatter as well, and refusing that copy
+	// refused the whole create. It is stored here, not interpreted: the filename
+	// still comes from the request's own title, so the two cannot drift apart
+	// through this key.
+	"title": true,
 }
 
 // unionFields returns a fresh map holding every key of the given sets.
