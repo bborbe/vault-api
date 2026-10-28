@@ -219,11 +219,17 @@ var _ = Describe("Task content endpoints", func() {
 				"target_vault":       `"personal"`,
 				"previous_assignee":  `"bborbe"`,
 				"retry_count":        `0`,
-				// Written by github-pr-watcher on the CREATE path, not by the
-				// executor/controller. Their absence refused every pr-review
-				// create outright (400 unknown_field: base_ref, 2026-10-28).
-				"base_ref":  `"master"`,
-				"clone_url": `"https://github.com/bborbe/example.git"`,
+				// Written by github-pr-watcher / the release watcher on the
+				// CREATE path, not by the executor/controller. Their absence
+				// refused every create outright (400 unknown_field, 2026-10-28),
+				// and fieldRefusal names only one key per attempt, so each of
+				// these appeared as "the" cause in a different log line.
+				"base_ref":        `"master"`,
+				"clone_url":       `"https://github.com/bborbe/example.git"`,
+				"ref":             `"0123456789abcdef"`,
+				"repo":            `"bborbe/example"`,
+				"current_version": `"v1.2.3"`,
+				"title":           `"Some Task Title"`,
 			}
 			for key, value := range values {
 				seed("task_identifier: task-1\nstatus: in_progress\n")
