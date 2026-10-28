@@ -64,11 +64,17 @@ type createRequest struct {
 // task whose status is terminal, and refuse every other occupant.
 const reopenTerminal = "terminal"
 
-// typedTaskFields is the frontmatter a PATCH may name. It is an allowlist rather
-// than a denylist because the alternative — accept anything the caller sends —
-// lets a client write keys this API does not model and cannot validate, which is
-// the drift the typed surface exists to stop. Approval is deliberately absent:
-// approved_by and approved_at are written by the approve endpoint alone.
+// typedTaskFields is the subset of frontmatter this API validates and reasons
+// about — the keys whose values it checks against a transition graph, a
+// normalised vocabulary or a rule. It is not the whole of what a write may name:
+// the agent pipeline's own keys are accepted too, through agentPipelineFields
+// below, and the two are kept apart deliberately (see that map's comment).
+//
+// It is an allowlist rather than a denylist because the alternative — accept
+// anything the caller sends — lets a client write keys this API does not model
+// and cannot validate, which is the drift the typed surface exists to stop.
+// Approval is deliberately absent: approved_by and approved_at are written by
+// the approve endpoint alone.
 var typedTaskFields = map[string]bool{
 	"status":       true,
 	"phase":        true,
@@ -88,6 +94,46 @@ var typedTaskFields = map[string]bool{
 	"planned_date": true,
 	"start_date":   true,
 	"blocked_by":   true,
+}
+
+// agentPipelineFields is the frontmatter the agent pipeline writes through this
+// API. It is a separate set from typedTaskFields on purpose: a key in
+// typedTaskFields is one this API validates and reasons about (status, phase,
+// assignee), while a key here is one it stores and carries without interpreting
+// it. Merging the two would hide that difference from the next reader and would
+// invite treating trigger_count as though this API knew what it counts.
+//
+// The set is closed, so the drift control typedTaskFields exists for still
+// holds: a key in neither map is refused with 400 unknown_field exactly as
+// before. Adding a pipeline key is a one-line change here plus a row in the
+// typed-API design, and changes nothing on the pipeline side.
+//
+// Every entry is measured rather than guessed — each is written today by
+// agent-task-executor or agent-task-controller on a path that reaches PatchTask.
+var agentPipelineFields = map[string]bool{
+	"trigger_scope":      true, // PublishSetTriggerScope
+	"trigger_count":      true, // PublishSetTriggerScope, IncrementFrontmatterCommand
+	"max_triggers":       true, // the operator's cap definition, armed on the crash class
+	"current_job":        true, // PublishSpawnNotification, cleared by PublishClearCurrentJob
+	"job_started_at":     true, // PublishSpawnNotification
+	"spawn_notification": true, // PublishSpawnNotification
+	"queued_at":          true, // PublishQueueEntry
+	"aborted_reason":     true, // PublishAbort
+	"gate_successor":     true, // PublishAbort
+	"target_vault":       true, // the controller's routing field, healed on write
+	"previous_assignee":  true, // trigger-cap escalation
+	"retry_count":        true, // the probe path's spawn-time bump, reset to 0 on reuse
+}
+
+// unionFields returns a fresh map holding every key of the given sets.
+func unionFields(sets ...map[string]bool) map[string]bool {
+	fields := map[string]bool{}
+	for _, set := range sets {
+		for key := range set {
+			fields[key] = true
+		}
+	}
+	return fields
 }
 
 // view renders the document as the typed read.
@@ -241,22 +287,21 @@ func fieldRefusal(
 	return ""
 }
 
+// patchFields is the frontmatter a PATCH may name: the typed surface plus the
+// keys the agent pipeline owns, unioned once at init. The call site below is
+// handed this flat map, not the two sets — the typed/pipeline distinction lives
+// at the two declarations above, not at the refusal.
+var patchFields = unionFields(typedTaskFields, agentPipelineFields)
+
 // patchFieldRefusal answers the request itself when a named field may not be
 // written through PATCH, and returns "" when every field is allowed.
 func patchFieldRefusal(w http.ResponseWriter, request map[string]any, path string) string {
-	return fieldRefusal(w, request, typedTaskFields, path)
+	return fieldRefusal(w, request, patchFields, path)
 }
 
 // createFields is the PATCH allowlist plus task_identifier, which only a create
 // may name: a PATCH that changed it would break the addressing the API rests on.
-var createFields = func() map[string]bool {
-	fields := make(map[string]bool, len(typedTaskFields)+1)
-	for key := range typedTaskFields {
-		fields[key] = true
-	}
-	fields["task_identifier"] = true
-	return fields
-}()
+var createFields = unionFields(patchFields, map[string]bool{"task_identifier": true})
 
 // createValues normalises the status and phase a create carries. It deliberately
 // does NOT run the transition graph — a create is not a transition — but it does

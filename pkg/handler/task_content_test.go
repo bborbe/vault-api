@@ -184,6 +184,65 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(BeEmpty(), "a refused field must not be written")
 		})
 
+		It("writes an agent-pipeline key, which this API stores but does not model", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"trigger_scope":"planning:","trigger_count":1,"current_job":"job-1"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			frontmatter, ok := decode(recorder)["frontmatter"].(map[string]any)
+			Expect(ok).To(BeTrue(), "the response carries the frontmatter as an object")
+			Expect(frontmatter["trigger_scope"]).To(Equal("planning:"))
+			Expect(frontmatter["current_job"]).To(Equal("job-1"))
+			Expect(writer.calls).To(HaveLen(1))
+			// The emitter quotes the value because it ends in a colon; asserting the
+			// quoted form keeps this a check on the write rather than on the encoder.
+			Expect(writer.calls[0].content).To(ContainSubstring("trigger_scope: 'planning:'"))
+		})
+
+		// One row per entry in agentPipelineFields. A misspelled map key fails
+		// closed — 400 unknown_field — so without this a typo would pass every
+		// other test here and only break the controller at runtime.
+		It("accepts every agent-pipeline key, not just the three the redrive sends", func() {
+			values := map[string]string{
+				"trigger_scope":      `"planning:"`,
+				"trigger_count":      `1`,
+				"max_triggers":       `3`,
+				"current_job":        `"job-1"`,
+				"job_started_at":     `"2026-10-28T10:00:00Z"`,
+				"spawn_notification": `true`,
+				"queued_at":          `"2026-10-28T10:00:00Z"`,
+				"aborted_reason":     `"cap reached"`,
+				"gate_successor":     `"none"`,
+				"target_vault":       `"personal"`,
+				"previous_assignee":  `"bborbe"`,
+				"retry_count":        `0`,
+			}
+			for key, value := range values {
+				seed("task_identifier: task-1\nstatus: in_progress\n")
+				recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"`+key+`":`+value+`}`)
+				Expect(recorder.Code).To(
+					Equal(http.StatusOK), key+" must be accepted by PATCH",
+				)
+				Expect(writer.calls).NotTo(BeEmpty(), key)
+				Expect(writer.calls[len(writer.calls)-1].content).To(
+					ContainSubstring(key+":"), key+" must reach the written file",
+				)
+			}
+		})
+
+		It("still refuses a key in neither set, so the drift control survives", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPatch, "/api/v1/tasks/task-1", `{"probe_unknown_field_zzz":"x"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("unknown_field"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
 		It("refuses the approval record, which the approve endpoint owns", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(
@@ -366,6 +425,23 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls[0].path).To(Equal("25 Tasks/Bravo.md"))
 			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier:"))
 			Expect(decode(recorder)["id"]).NotTo(BeEmpty())
+		})
+
+		// The create route shares the PATCH allowlist, so it accepts the pipeline
+		// keys too. That is deliberate rather than incidental: the controller's
+		// create executor stamps target_vault, and max_triggers is documented as
+		// something only a task's own create sets.
+		It("accepts an agent-pipeline key on create, which the controller sends", func() {
+			Expect(index.Build(ctx, store())).To(Succeed())
+			recorder := call(
+				http.MethodPost,
+				"/api/v1/tasks",
+				`{"title":"Bravo","frontmatter":{"status":"in_progress","target_vault":"personal","max_triggers":3},"body":"hello\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring("target_vault: personal"))
+			Expect(writer.calls[0].content).To(ContainSubstring("max_triggers: 3"))
 		})
 
 		It("answers 409 task_exists when the title is already taken", func() {
