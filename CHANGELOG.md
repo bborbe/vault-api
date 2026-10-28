@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.1
 
 - fix: **`PATCH /tasks/{id}` now accepts the frontmatter the agent pipeline writes, carried in a set separate from the typed one.** `typedTaskFields` refused `trigger_scope`, `trigger_count`, `current_job`, `job_started_at`, `spawn_notification`, `queued_at`, `aborted_reason`, `gate_successor`, `target_vault`, `previous_assignee`, `max_triggers` and `retry_count` with `400 unknown_field`, and because `fieldRefusal` refuses the whole request on the first unknown key, every write naming one of them failed entirely — measured live on dev 2026-10-28: `trigger_scope` at 15:08:20, `trigger_count` and `current_job` at 15:13:20. The cause was never payload width: the controller already PATCHes only the keys that changed (`agent-task-controller` `buildUpdatePatch`).
   ⚠️ **The two sets stay separate, and the distinction is load-bearing.** A key in `typedTaskFields` is one this API validates and reasons about; a key in the new `agentPipelineFields` is one it stores and carries without interpreting. Merging them would hide that difference and invite treating `trigger_count` as though this API knew what it counts.
