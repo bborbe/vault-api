@@ -244,6 +244,12 @@ var _ = Describe("Task content endpoints", func() {
 				// metadata, so it lives in typedTaskFields — asserted here
 				// because a create is what refused it.
 				"themes": `["[[Administration]]"]`,
+				// Also sent by recurring-task-creator, and found only after
+				// v0.21.6 shipped: fieldRefusal names one refused key per
+				// attempt, so the next one surfaced as a fresh outage
+				// (`page_type`) instead of as the remainder of the same one.
+				"page_type": `"task"`,
+				"launcher":  `"claude"`,
 			}
 			for key, value := range values {
 				seed("task_identifier: task-1\nstatus: in_progress\n")
