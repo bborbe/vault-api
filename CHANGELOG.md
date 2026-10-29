@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.5
 
 - fix: **`override_reason` is accepted on task create, so a mechanical `pr-override` can be created at all.** v0.21.4 widened the create allowlist from the fields one outage's log lines happened to name, and `override_reason` never appeared among them: `fieldRefusal` names only one refused key per attempt and Go map iteration is random, so the set was measured from a sample rather than from the producer. `github-pr-watcher` stamps the key on every mechanical override, and the `pr-override` agent keys its mechanical APPROVE on it — absent, it posts the label body instead — so the 400 lost the whole override rather than only its metadata. Measured 2026-10-29: creates for `bborbe/agent-claude#73` (07:33:55), `bborbe/github-releaser-agent#35` (08:13:55) and `bborbe/github-pr-review-agent#65` (09:08:09) each 400'd with `unknown_field: override_reason`, the Kafka message was consumed and dropped, and `#65` was left with neither an override nor a review.
   ⚠️ **Dropping the key to make the create pass would have traded a silent failure for a wrong record.** Absent, the agent falls through to the label body, which claims a trusted author applied the override label — text that is false for a mechanical approve. The field is read, not stored blind.
