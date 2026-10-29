@@ -94,6 +94,12 @@ var typedTaskFields = map[string]bool{
 	"planned_date": true,
 	"start_date":   true,
 	"blocked_by":   true,
+	// themes is a modelled task field, not pipeline metadata: every hand-written
+	// task in every vault carries it and the vault UI renders it. It arrives on
+	// the CREATE path from every recurring template, so refusing it refused the
+	// whole instance — measured 2026-10-29, the daily recurring cadence produced
+	// zero task files that day, and the field named in the 400 was this one.
+	"themes": true,
 }
 
 // agentPipelineFields is the frontmatter the agent pipeline writes through this
@@ -154,6 +160,16 @@ var agentPipelineFields = map[string]bool{
 	// still comes from the request's own title, so the two cannot drift apart
 	// through this key.
 	"title": true,
+	// Written by recurring-task-creator on every instance it materializes, and
+	// by the sentry-analyzer producer on the tasks it files. All three arrive on
+	// the CREATE path from a template, and `fieldRefusal` names one key while Go
+	// map iteration is random — so a create carrying several of these reported a
+	// different field each attempt and looked like three separate bugs. Measured
+	// 2026-10-29 on prod: `themes` ×2, `created_by` ×1, `date` ×1, each refusing
+	// a whole recurring instance whose body was then discarded with it.
+	"created_by":       true, // recurring-task-creator, sentry producers
+	"auto_abort_prior": true, // recurring-task-creator's supersede flag
+	"date":             true, // the sentry producers' event date
 }
 
 // unionFields returns a fresh map holding every key of the given sets.
