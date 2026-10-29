@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.4
 
 - fix: **six task-create fields are accepted again, so `pr-review` and `release` tasks can be created at all.** `agentPipelineFields` was widened in v0.21.1 to stop refusing the fields the agent pipeline writes, but it covered only what `agent-task-executor` and `agent-task-controller` set. The two watchers stamp `base_ref`, `clone_url`, `ref`, `repo`, `current_version` and `title` into the tasks they create, and none of the six was in any set. `createFields` derives from that union and `fieldRefusal` refuses the whole request on the first unknown key, so every create was rejected outright: measured 2026-10-28, `vault-api` v0.21.2 took traffic at `19:59:57` and from that minute on **no PR on the fleet was being reviewed**, and no release task could be created either.
   ⚠️ **`fieldRefusal` names ONE key and Go map iteration is random**, so a create missing several reports a different field on each attempt — the same outage logged `title` 9×, `clone_url` 5×, `base_ref` 5×, `ref` 4×, `repo` 1×, `current_version` 1×. Widening by the field named in one log line fixes one sixth of the problem and looks like a complete fix until the next attempt reports the next key. The set is measured from the log, not from one example.
