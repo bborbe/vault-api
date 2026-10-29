@@ -141,6 +141,13 @@ var agentPipelineFields = map[string]bool{
 	"ref":             true, // the commit under review / the release ref
 	"repo":            true, // owner/repo, on release tasks
 	"current_version": true, // the version a release task starts from
+	// override_reason names the mechanical rule on a pr-override. The
+	// pr-override agent posts its mechanical APPROVE only when this key reads
+	// "trivial-bot-bump" and falls back to the label body when it is absent, so
+	// refusing it here lost the whole override rather than only its metadata
+	// (measured 2026-10-29: the create 400'd, the command was consumed and
+	// dropped, and the PR was left with neither an override nor a review).
+	"override_reason": true,
 	// title is ALSO a top-level create field that owns the filename. The
 	// pipeline sends it in the frontmatter as well, and refusing that copy
 	// refused the whole create. It is stored here, not interpreted: the filename
