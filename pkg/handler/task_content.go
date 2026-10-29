@@ -100,6 +100,11 @@ var typedTaskFields = map[string]bool{
 	// whole instance — measured 2026-10-29, the daily recurring cadence produced
 	// zero task files that day, and the field named in the 400 was this one.
 	"themes": true,
+	// page_type is how every vault page declares what it is (`task`, `goal`,
+	// `runbook`, …). recurring-task-creator stamps it on every instance, and
+	// vault-cli reads it to decide which folder and template a record belongs
+	// to, so it is modelled rather than stored blind.
+	"page_type": true,
 }
 
 // agentPipelineFields is the frontmatter the agent pipeline writes through this
@@ -170,6 +175,7 @@ var agentPipelineFields = map[string]bool{
 	"created_by":       true, // recurring-task-creator, sentry producers
 	"auto_abort_prior": true, // recurring-task-creator's supersede flag
 	"date":             true, // the sentry producers' event date
+	"launcher":         true, // recurring-task-creator, on 9 of the prod templates
 }
 
 // unionFields returns a fresh map holding every key of the given sets.
