@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`override_reason` is accepted on task create, so a mechanical `pr-override` can be created at all.** v0.21.4 widened the create allowlist from the fields one outage's log lines happened to name, and `override_reason` never appeared among them: `fieldRefusal` names only one refused key per attempt and Go map iteration is random, so the set was measured from a sample rather than from the producer. `github-pr-watcher` stamps the key on every mechanical override, and the `pr-override` agent keys its mechanical APPROVE on it — absent, it posts the label body instead — so the 400 lost the whole override rather than only its metadata. Measured 2026-10-29: creates for `bborbe/agent-claude#73` (07:33:55), `bborbe/github-releaser-agent#35` (08:13:55) and `bborbe/github-pr-review-agent#65` (09:08:09) each 400'd with `unknown_field: override_reason`, the Kafka message was consumed and dropped, and `#65` was left with neither an override nor a review.
+  ⚠️ **Dropping the key to make the create pass would have traded a silent failure for a wrong record.** Absent, the agent falls through to the label body, which claims a trusted author applied the override label — text that is false for a mechanical approve. The field is read, not stored blind.
+  ⚠️ **The allowlist comment claimed to be "the whole set"; it was the whole set of the fields that outage logged.** The pinning test now carries `override_reason` alongside the other six, so the next widening is checked against the producers rather than against a single incident's log.
+
 ## v0.21.4
 
 - fix: **six task-create fields are accepted again, so `pr-review` and `release` tasks can be created at all.** `agentPipelineFields` was widened in v0.21.1 to stop refusing the fields the agent pipeline writes, but it covered only what `agent-task-executor` and `agent-task-controller` set. The two watchers stamp `base_ref`, `clone_url`, `ref`, `repo`, `current_version` and `title` into the tasks they create, and none of the six was in any set. `createFields` derives from that union and `fieldRefusal` refuses the whole request on the first unknown key, so every create was rejected outright: measured 2026-10-28, `vault-api` v0.21.2 took traffic at `19:59:57` and from that minute on **no PR on the fleet was being reviewed**, and no release task could be created either.

@@ -229,6 +229,7 @@ var _ = Describe("Task content endpoints", func() {
 				"ref":             `"0123456789abcdef"`,
 				"repo":            `"bborbe/example"`,
 				"current_version": `"v1.2.3"`,
+				"override_reason": `"trivial-bot-bump"`,
 				"title":           `"Some Task Title"`,
 			}
 			for key, value := range values {
