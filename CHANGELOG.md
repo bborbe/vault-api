@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.7
 
 - fix: **`page_type` and `launcher` are accepted on task create — the two keys v0.21.6 still refused.** Enumerating every key the prod recurring templates actually send (`task/recurring-schedules/prod/*.yaml`, 86 templates) against both allowlists found these two missing: `page_type` is stamped on every instance and read by vault-cli to route a record, `launcher` appears on 9 templates. v0.21.6 widened by the four keys an earlier outage's log lines happened to name, which is the same sample-not-population mistake v0.21.4 and v0.21.5 each made — `fieldRefusal` names one refused key per attempt and Go map iteration is random, so the remaining keys surfaced one at a time as fresh outages (the next one read `unknown_field: page_type`).
   ⚠️ **Measured, not guessed, this time.** The key set came from parsing the `frontmatter:` block of all 86 prod templates, not from a log line: `assignee`, `blocked_by`, `category`, `due_date`, `goals`, `launcher`, `mode`, `phase`, `planned_date`, `priority`, `role`, `status`, `task_type`, `themes`. Everything else on that list was already allowed; these two were not.
