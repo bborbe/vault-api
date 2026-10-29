@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.6
 
 - fix: **`themes`, `created_by`, `auto_abort_prior` and `date` are accepted on task create, so a recurring instance can be written at all.** `recurring-task-creator` stamps `themes` from every template and adds `created_by` / `auto_abort_prior` itself; the sentry producers add `date`. None were in `typedTaskFields` or `agentPipelineFields`, so `fieldRefusal` refused the **whole** request — body included — and the instance never existed. Measured 2026-10-29 on prod: **zero** task files created for that date in any vault, against 22 the previous day, while the creator itself was healthy (276 commands in six hours, no error). The controller logged `unknown_field: themes` on `Cleanup Obsidian Inbox - 2026-10-29`, `created_by` on `Cleanup OmniFocus Inbox` and `date` on a sentry task — three names for one outage, because `fieldRefusal` names only one refused key per attempt and Go map iteration is random.
   ⚠️ **The failure was invisible because period-dated series looked fine.** A `2026W44` / `2026-10` / `2026Q4` create short-circuits when the file already exists ("identifier … resolves to … using title"), so no write and no validation. Only a series needing a **new** file reached the refusal — exactly the daily ones — so the daily cleanup cadence stopped while the board kept its weekly and monthly rows.
