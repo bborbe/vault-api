@@ -231,6 +231,19 @@ var _ = Describe("Task content endpoints", func() {
 				"current_version": `"v1.2.3"`,
 				"override_reason": `"trivial-bot-bump"`,
 				"title":           `"Some Task Title"`,
+				// Written by recurring-task-creator on every instance it
+				// materializes, and by the sentry producers on the tasks they
+				// file. All arrive on the CREATE path, and fieldRefusal names
+				// one key per attempt — measured 2026-10-29 on prod: `themes`
+				// ×2, `created_by` ×1, `date` ×1, and the daily recurring
+				// cadence produced no task file at all that day.
+				"created_by":       `"recurring-task-creator"`,
+				"auto_abort_prior": `true`,
+				"date":             `"2026-10-29"`,
+				// themes is a modelled task field rather than pipeline
+				// metadata, so it lives in typedTaskFields — asserted here
+				// because a create is what refused it.
+				"themes": `["[[Administration]]"]`,
 			}
 			for key, value := range values {
 				seed("task_identifier: task-1\nstatus: in_progress\n")
