@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.8
 
 - fix: **fifteen task-create fields are accepted, enumerated from every watcher's own `CreateCommand` rather than from the log.** `agentPipelineFields` was widened four times (v0.21.4–v0.21.7), each time by the keys one outage's log lines happened to name — and each time the next create reported the next key as a fresh outage. This round reads the population: the `frontmatter:` literal of every watcher's create builder, at the tag that is actually **deployed** (`github-dark-factory-watcher` v0.3.2, `github-update-go-watcher` v0.7.0, `github-build-watcher` v0.4.0, `github-vuln-watcher` v0.2.0, `sentry-watcher` v0.1.3, `go-version-watcher` v0.8.0), diffed against both allowlists. Fifteen keys were missing: `branch`, `pr_number`, `current_go`, `latest_go`, `episode_sha`, `vuln_count`, `vulns`, `short_id`, `project`, `issue_url`, `new_version`, `previous_version`, `release_kind`, `release_notes_url`, and `recovery_sha` — the last on the complete-task **patch**, which `createFields` covers through its union with `patchFields`.
   ⚠️ **The log undercounts this set fourfold, and always has.** A 90-minute prod window on 2026-11-01 logged 25 refusals across only four distinct fields (`vuln_count` ×12, `vulns` ×9, `branch` ×3, `recovery_sha` ×1) while the producer diff found fifteen. `fieldRefusal` names one key per attempt and Go map iteration is random, so a log can sample this set but never enumerate it — which is precisely why every earlier widening shipped one outage late.
