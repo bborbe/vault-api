@@ -250,12 +250,9 @@ var _ = Describe("Task content endpoints", func() {
 				// (`page_type`) instead of as the remainder of the same one.
 				"page_type": `"task"`,
 				"launcher":  `"claude"`,
-				// Read from each watcher's own CreateCommand frontmatter at its
-				// DEPLOYED tag, not counted from the log. A 90-minute prod window
-				// on 2026-11-01 logged 25 refusals across only four distinct
-				// fields while a diff of the producers found fifteen —
-				// fieldRefusal names one key per attempt and Go map iteration is
-				// random, so the log samples the set and can never enumerate it.
+				// Watcher create keys: each must survive the create allowlist,
+				// not only PATCH. fieldRefusal names one refused key per attempt,
+				// so a partial set reads as a different bug on every retry.
 				"branch":            `"dark-factory/thing"`,
 				"pr_number":         `42`,
 				"current_go":        `"1.24.0"`,

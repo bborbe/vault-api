@@ -177,19 +177,12 @@ var agentPipelineFields = map[string]bool{
 	"date":             true, // the sentry producers' event date
 	"launcher":         true, // recurring-task-creator, on 9 of the prod templates
 
-	// Written by each watcher's own CreateCommand frontmatter, read at that
-	// watcher's DEPLOYED tag. This is the block above's lesson taken one level
-	// harder: measured 2026-11-01, a 90-minute prod window logged 25 refusals
-	// across only four distinct fields — `vuln_count` ×12, `vulns` ×9, `branch`
-	// ×3, `recovery_sha` ×1 — while a diff of every watcher's frontmatter
-	// against this map found FIFTEEN refused keys. The log undercounts by 4×
-	// because `fieldRefusal` names one key per attempt and Go map iteration is
-	// random: it can sample the set, never enumerate it. Read the producers.
-	//
-	// Four of these are observed refusals (`branch`, `vuln_count`, `vulns`,
-	// `recovery_sha`). The other eleven are refused by construction — absent
-	// from both maps, so rejected the moment the watcher publishes — and had
-	// simply never been the key the random pick happened to report.
+	// Written by the watchers' own CreateCommand frontmatter. Each key names the
+	// builder that sets it; the watchers are the only producers that know the
+	// repo, branch, commit or release a task is about, and no typed key carries
+	// any of that. Enumerated from those builders rather than from a log sample:
+	// `fieldRefusal` names one key per attempt and Go map iteration is random,
+	// so a log reports a different key each time and cannot enumerate the set.
 	"branch":            true, // github-dark-factory-watcher buildFrontmatter
 	"pr_number":         true, // github-dark-factory-watcher buildFrontmatter
 	"current_go":        true, // github-update-go-watcher buildFrontmatter
