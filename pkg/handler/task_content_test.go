@@ -250,6 +250,26 @@ var _ = Describe("Task content endpoints", func() {
 				// (`page_type`) instead of as the remainder of the same one.
 				"page_type": `"task"`,
 				"launcher":  `"claude"`,
+				// Watcher create keys: each must survive the create allowlist,
+				// not only PATCH. fieldRefusal names one refused key per attempt,
+				// so a partial set reads as a different bug on every retry.
+				"branch":            `"dark-factory/thing"`,
+				"pr_number":         `42`,
+				"current_go":        `"1.24.0"`,
+				"latest_go":         `"1.25.0"`,
+				"episode_sha":       `"0123456789abcdef"`,
+				"vuln_count":        `2`,
+				"vulns":             `["GHSA-1","GHSA-2"]`,
+				"short_id":          `"PROJ-1A"`,
+				"project":           `"example-project"`,
+				"issue_url":         `"https://sentry.io/issues/1/"`,
+				"new_version":       `"1.25.0"`,
+				"previous_version":  `"1.24.0"`,
+				"release_kind":      `"minor"`,
+				"release_notes_url": `"https://go.dev/doc/devel/release"`,
+				// recovery_sha rides the COMPLETE-TASK patch, not a create, and
+				// belongs here only because createFields unions patchFields.
+				"recovery_sha": `"0123456789abcdef"`,
 			}
 			for key, value := range values {
 				seed("task_identifier: task-1\nstatus: in_progress\n")
@@ -473,6 +493,42 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].content).To(ContainSubstring("target_vault: personal"))
 			Expect(writer.calls[0].content).To(ContainSubstring("max_triggers: 3"))
+		})
+
+		// The pinning test above drives PATCH only. A key can be accepted by
+		// PATCH and still be refused on create if the union ever changes shape,
+		// and more to the point: this defect shipped twice while PATCH was
+		// green. Every watcher's create frontmatter is asserted here in ONE
+		// payload, because fieldRefusal names only one refused key per attempt.
+		It("accepts every watcher create key in one create payload", func() {
+			Expect(index.Build(ctx, store())).To(Succeed())
+			recorder := call(
+				http.MethodPost,
+				"/api/v1/tasks",
+				`{"title":"Charlie","frontmatter":{"status":"in_progress",`+
+					`"branch":"dark-factory/thing","pr_number":42,`+
+					`"current_go":"1.24.0","latest_go":"1.25.0",`+
+					`"episode_sha":"0123456789abcdef",`+
+					`"vuln_count":2,"vulns":["GHSA-1"],`+
+					`"short_id":"PROJ-1A","project":"example-project",`+
+					`"issue_url":"https://sentry.io/issues/1/",`+
+					`"new_version":"1.25.0","previous_version":"1.24.0",`+
+					`"release_kind":"minor",`+
+					`"release_notes_url":"https://go.dev/doc/devel/release"`+
+					`},"body":"hello\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(writer.calls).To(HaveLen(1))
+			for _, key := range []string{
+				"branch", "pr_number", "current_go", "latest_go", "episode_sha",
+				"vuln_count", "vulns", "short_id", "project", "issue_url",
+				"new_version", "previous_version", "release_kind",
+				"release_notes_url",
+			} {
+				Expect(writer.calls[0].content).To(
+					ContainSubstring(key+":"), key+" must reach the written file",
+				)
+			}
 		})
 
 		It("answers 409 task_exists when the title is already taken", func() {
