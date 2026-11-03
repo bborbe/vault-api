@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.21.9
 
 - fix: **an empty `TOPIC_PREFIX` is accepted again, so a single-stage cluster can start.** `emitterFactory` refused brokers-without-prefix with `topic-prefix is required when kafka-brokers is set`, on the belief that the topic would render as `-agent-task-v1-event`. That belief is false for the pinned `github.com/bborbe/cqrs v0.6.13`, whose `base.TopicPrefix` documents and implements the opposite: *an empty TopicPrefix means the topic name carries no prefix segment and no leading dash*. An empty prefix is exactly the configuration a one-cluster-per-stage deployment needs — the octopus `agent` lane's executor runs `TopicPrefix ''` and consumes `agent-task-v1-event`, so any non-empty prefix would publish to `<prefix>-agent-task-v1-event`, a topic nothing consumes: wired on paper, delivering nothing.
   ⚠️ **The guard made the process unstartable, not merely unpublishable.** `emitterFactory` runs on the boot path, so the whole read API exited with code 1 on every restart — a deployment that only needed to publish nothing instead served nothing.
