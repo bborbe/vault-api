@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- chore: update github.com/bborbe/agent to v0.138.0, github.com/bborbe/cqrs to v0.6.15, github.com/bborbe/errors to v1.6.6, github.com/bborbe/http to v1.26.32, github.com/bborbe/kafka to v1.29.11, github.com/bborbe/log to v1.7.6, github.com/bborbe/run to v1.11.10, github.com/bborbe/sentry to v1.10.7, github.com/bborbe/service to v1.11.2, github.com/bborbe/time to v1.27.25, github.com/bborbe/vault-cli to v0.186.2, github.com/onsi/ginkgo/v2 to v2.34.0
+
 ## v0.21.8
 
 - fix: **fifteen task-create fields are accepted, enumerated from every watcher's own `CreateCommand` rather than from the log.** `agentPipelineFields` was widened four times (v0.21.4–v0.21.7), each time by the keys one outage's log lines happened to name — and each time the next create reported the next key as a fresh outage. This round reads the population: the `frontmatter:` literal of every watcher's create builder, at the tag that is actually **deployed** (`github-dark-factory-watcher` v0.3.2, `github-update-go-watcher` v0.7.0, `github-build-watcher` v0.4.0, `github-vuln-watcher` v0.2.0, `sentry-watcher` v0.1.3, `go-version-watcher` v0.8.0), diffed against both allowlists. Fifteen keys were missing: `branch`, `pr_number`, `current_go`, `latest_go`, `episode_sha`, `vuln_count`, `vulns`, `short_id`, `project`, `issue_url`, `new_version`, `previous_version`, `release_kind`, `release_notes_url`, and `recovery_sha` — the last on the complete-task **patch**, which `createFields` covers through its union with `patchFields`.
