@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`make build BUILD_TARGET=<cluster>` builds the image as a BuildKit Job in a Kubernetes cluster**, so publishing no longer needs a local Docker daemon. `hack/build-cluster.sh` renders `hack/build-job.yaml`, applies it, waits for terminal state and prints the pushed digest; `hack/cluster-alias.sh` resolves the alias (`sun`, `nukedev`, `nukeprod`, or a literal kubectl context). `BUILD_TARGET` defaults to `local`, and the local `docker build` arm is unchanged.
+  ⚠️ **The cluster arm carries a credential the public repos' template does not.** vault-api is private, so the Job's clone cannot be anonymous: a `mint-token` init container mints a GitHub App installation token from the `git-app` secret (`APP_ID`, `INSTALLATION_ID`, `PEM_KEY`) and the clone reads it through a git credential helper, never through the remote URL. The mint image lives in the private nuke registry while the built image is pushed to docker.io, so the pod carries a pull secret for each — one credential cannot authenticate both.
+  ⚠️ **A `vendor` init container runs `go mod vendor` in the clone.** The Dockerfile builds `-mod=vendor` while `/vendor` is gitignored, so a bare clone has no vendor tree and `go build` would fail on an empty `vendor/modules.txt`. The local arm regenerates it through `check-go-mod`; the cluster arm does the same inside the pod.
+
 ## v0.21.9
 
 - fix: **an empty `TOPIC_PREFIX` is accepted again, so a single-stage cluster can start.** `emitterFactory` refused brokers-without-prefix with `topic-prefix is required when kafka-brokers is set`, on the belief that the topic would render as `-agent-task-v1-event`. That belief is false for the pinned `github.com/bborbe/cqrs v0.6.13`, whose `base.TopicPrefix` documents and implements the opposite: *an empty TopicPrefix means the topic name carries no prefix segment and no leading dash*. An empty prefix is exactly the configuration a one-cluster-per-stage deployment needs — the octopus `agent` lane's executor runs `TopicPrefix ''` and consumes `agent-task-v1-event`, so any non-empty prefix would publish to `<prefix>-agent-task-v1-event`, a topic nothing consumes: wired on paper, delivering nothing.
