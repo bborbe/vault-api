@@ -72,8 +72,12 @@ Docker installed can still publish. `REF` is the git ref the Job clones and
 default because the default resolves to the newest release tag.
 
 ```bash
-make build BUILD_TARGET=sun REF=$(git rev-parse HEAD) VERSION=v0.21.9
+make build BUILD_TARGET=sun REF=$(git rev-parse HEAD) VERSION=<tag>
 ```
+
+`<tag>` is pushed to `docker.io/bborbe/vault-api`, so it replaces an existing
+tag of the same name — use a scratch tag such as `scratch-vault-api-20261103-1`
+unless you are deliberately publishing a release.
 
 `BUILD_TARGET` accepts `sun`, `nukedev`, `nukeprod`, or any kubectl context in
 the default kubeconfig. The Job clones the repository with a GitHub App
