@@ -10,7 +10,35 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/bborbe/vault-api/pkg/publisher"
 )
+
+// emitterFactory used to reject brokers-without-prefix on the belief that the
+// topic would render as "-agent-task-v1-event". cqrs's base.TopicPrefix does the
+// opposite — an empty prefix renders as no segment and no leading dash — so the
+// octopus agent lane, which runs one cluster per stage and consumes
+// "agent-task-v1-event", could not start at all: the process exited with
+// "topic-prefix is required when kafka-brokers is set" on every boot.
+var _ = Describe("emitterFactory", func() {
+	It("builds an emitter when brokers are set and the prefix is empty", func() {
+		app := &application{KafkaBrokers: "tls://broker:9093", TopicPrefix: ""}
+
+		Expect(app.emitterFactory(publisher.NewDiscard())).NotTo(BeNil())
+	})
+
+	It("builds an emitter when brokers and a prefix are both set", func() {
+		app := &application{KafkaBrokers: "tls://broker:9093", TopicPrefix: "develop"}
+
+		Expect(app.emitterFactory(publisher.NewDiscard())).NotTo(BeNil())
+	})
+
+	It("returns no emitter when brokers are unset", func() {
+		app := &application{KafkaBrokers: "", TopicPrefix: ""}
+
+		Expect(app.emitterFactory(publisher.NewDiscard())).To(BeNil())
+	})
+})
 
 var _ = Describe("eventVaultName", func() {
 	It("prefers the routing slug when one is configured", func() {
