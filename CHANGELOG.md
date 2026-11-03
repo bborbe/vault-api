@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.0
 
 - feat: **`make build BUILD_TARGET=<cluster>` builds the image as a BuildKit Job in a Kubernetes cluster**, so publishing no longer needs a local Docker daemon. `hack/build-cluster.sh` renders `hack/build-job.yaml`, applies it, waits for terminal state and prints the pushed digest; `hack/cluster-alias.sh` resolves the alias (`sun`, `nukedev`, `nukeprod`, or a literal kubectl context). `BUILD_TARGET` defaults to `local`, and the local `docker build` arm is unchanged.
   ⚠️ **The cluster arm carries a credential the public repos' template does not.** vault-api is private, so the Job's clone cannot be anonymous: a `mint-token` init container mints a GitHub App installation token from the `git-app` secret (`APP_ID`, `INSTALLATION_ID`, `PEM_KEY`) and the clone reads it through a git credential helper, never through the remote URL. The mint image lives in the private nuke registry while the built image is pushed to docker.io, so the pod carries a pull secret for each — one credential cannot authenticate both.
