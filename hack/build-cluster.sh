@@ -26,6 +26,14 @@ MINT_IMAGE="${MINT_IMAGE:-docker.prod.nuke.benjamin-borbe.de:443/scripts-mint-ia
 # The mint image lives in the nuke registry, the pushed image usually in
 # docker.io: one pull secret cannot authenticate both.
 MINT_PULL_SECRET="${MINT_PULL_SECRET:-buildkit-push-nuke}"
+# Flow-form nodeSelector, e.g. '{kubernetes.io/hostname: sun-k3s-worker-0}'.
+# sun's master carries no taint and only 4 CPU / 4 GiB, so an unpinned build
+# lands on the control plane; observed 2026-11-03, a mint-image pull there
+# failed with `not found` while the same digest pulled fine on the worker.
+NODE_SELECTOR="${NODE_SELECTOR:-}"
+if [ -z "${NODE_SELECTOR}" ] && [ "${BUILD_TARGET:-}" = "sun" ]; then
+	NODE_SELECTOR='{kubernetes.io/hostname: sun-k3s-worker-0}'
+fi
 
 die() {
 	echo "build-cluster: $*" >&2
@@ -73,6 +81,8 @@ printf '%s' "${MINT_IMAGE}" | grep -qE '^[A-Za-z0-9._/:@-]+$' ||
 	die "MINT_IMAGE '${MINT_IMAGE}' contains characters outside [A-Za-z0-9._/:@-]"
 printf '%s' "${MINT_PULL_SECRET}" | grep -qE '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$' ||
 	die "MINT_PULL_SECRET '${MINT_PULL_SECRET}' is not a valid Kubernetes secret name"
+printf '%s' "${NODE_SELECTOR}" | grep -qE '^$|^\{[A-Za-z0-9./_-]+: [A-Za-z0-9._-]+\}$' ||
+	die "NODE_SELECTOR '${NODE_SELECTOR}' must be empty or flow form '{<key>: <value>}'"
 printf '%s' "${DOCKER_REGISTRY}" | grep -qE '^[A-Za-z0-9._/:-]+$' ||
 	die "DOCKER_REGISTRY '${DOCKER_REGISTRY}' contains characters outside [A-Za-z0-9._/:-]"
 printf '%s' "${TIMEOUT}" | grep -qE '^[0-9]+$' ||
@@ -144,7 +154,17 @@ sed \
 	-e "s|__SOURCE_DATE_EPOCH__|${SOURCE_DATE_EPOCH}|g" \
 	-e "s|__DOCKER_REGISTRY__|${DOCKER_REGISTRY}|g" \
 	-e "s|__NAMESPACE__|${NAMESPACE}|g" \
+	-e "s|__NODE_SELECTOR__|${NODE_SELECTOR}|g" \
 	"${TEMPLATE}" >"${rendered}"
+
+# An empty NODE_SELECTOR must delete the line rather than leave
+# `nodeSelector:` with a null value: the key would then be present with no
+# mapping, and a later edit that adds a second entry under it would silently
+# render invalid YAML.
+if [ -z "${NODE_SELECTOR}" ]; then
+	grep -v '^[[:space:]]*nodeSelector:[[:space:]]*$' "${rendered}" >"${rendered}.tmp"
+	mv "${rendered}.tmp" "${rendered}"
+fi
 
 # The rendered manifest, not the environment, decides the namespace. A template
 # may hardcode `namespace:` instead of carrying the token, and polling the
