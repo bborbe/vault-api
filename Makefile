@@ -148,8 +148,24 @@ addlicense:
 buca: build upload clean apply
 
 
+# BUILD_TARGET selects where `make build` runs. `local` (the default) uses the
+# local Docker daemon; any other value names a cluster alias (sun / nukedev /
+# nukeprod) and builds inside that cluster as a Job rendered from
+# hack/build-job.yaml. The cluster arm needs no Docker on this machine.
+BUILD_TARGET ?= local
+BUILD_TIMEOUT ?= 3600
+BUILD_REPO_URL ?= https://github.com/$(IMAGE).git
+BUILD_DOCKERFILE ?= Dockerfile
+BUILD_PUSH_SECRET ?= buildkit-push
+# vault-api is private, so the Job mints a GitHub App installation token from
+# this secret before cloning. The mint image is pinned by digest.
+BUILD_GIT_SECRET ?= git-app
+BUILD_MINT_IMAGE ?= docker.prod.nuke.benjamin-borbe.de:443/scripts-mint-iat@sha256:dceb875286c07f3547096591a2824b0e1dbe9646c3c681107af0f617f8931be4
+BUILD_MINT_PULL_SECRET ?= buildkit-push-nuke
+
 .PHONY: build
 build: check-version-tag check-go-mod
+ifeq ($(BUILD_TARGET),local)
 	DOCKER_BUILDKIT=1 \
 	docker build \
 	--no-cache \
@@ -162,9 +178,40 @@ build: check-version-tag check-go-mod
 	--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 	-t $(DOCKER_REGISTRY)/$(IMAGE):$(VERSION) \
 	-f Dockerfile .
+else
+# The cluster arm publishes at VERSION and cannot use check-version-tag: that
+# guard compares the local HEAD's tag, which is meaningless when the Job clones
+# an arbitrary REF. It would also silently pass a VERSION that is merely the
+# Makefile's default — `git describe --tags $(git rev-list --tags --max-count=1)`
+# resolves to the newest release tag, so a bare `make build BUILD_TARGET=sun`
+# would push over that released image. Require the caller to name the tag:
+#   make build BUILD_TARGET=<cluster> REF=<sha> VERSION=<tag>
+	@if [ "$(origin VERSION)" = "file" ] && [ -z "$(ALLOW_DEFAULT_VERSION)" ]; then \
+		echo "ERROR: the cluster arm needs an explicit VERSION." >&2; \
+		echo "  VERSION was defaulted to $(VERSION), which is the newest release tag." >&2; \
+		echo "  Building over it would replace a released image." >&2; \
+		echo "  Pass VERSION=<scratch-tag>, or set ALLOW_DEFAULT_VERSION=1 to build the default deliberately." >&2; \
+		exit 1; \
+	fi
+	BUILD_TARGET='$(BUILD_TARGET)' \
+	REPO_URL='$(BUILD_REPO_URL)' \
+	REF='$(REF)' \
+	TAG='$(VERSION)' \
+	DOCKERFILE='$(BUILD_DOCKERFILE)' \
+	IMAGE='$(DOCKER_REGISTRY)/$(IMAGE)' \
+	DOCKER_REGISTRY='$(DOCKER_REGISTRY)' \
+	PUSH='true' \
+	PUSH_SECRET='$(BUILD_PUSH_SECRET)' \
+	GIT_SECRET='$(BUILD_GIT_SECRET)' \
+	MINT_IMAGE='$(BUILD_MINT_IMAGE)' \
+	MINT_PULL_SECRET='$(BUILD_MINT_PULL_SECRET)' \
+	TIMEOUT='$(BUILD_TIMEOUT)' \
+	hack/build-cluster.sh
+endif
 
 .PHONY: check-version-tag
 check-version-tag:
+ifeq ($(BUILD_TARGET),local)
 	@if [ -n "$(ALLOW_UNTAGGED_BUILD)" ]; then \
 		echo "ALLOW_UNTAGGED_BUILD set — skipping version/tag check"; \
 	else \
@@ -178,27 +225,38 @@ check-version-tag:
 			exit 1; \
 		fi; \
 	fi
+endif
 
 .PHONY: check-go-mod
 check-go-mod:
+ifeq ($(BUILD_TARGET),local)
 	@if [ -f "go.mod" ]; then \
 		echo "go.mod found, running go mod vendor..."; \
 		go mod vendor; \
 	else \
 		echo "go.mod not found, skipping go mod vendor."; \
 	fi
+endif
 
 
 .PHONY: upload
 upload:
+ifeq ($(BUILD_TARGET),local)
 	docker push $(DOCKER_REGISTRY)/$(IMAGE):$(VERSION)
+else
+	@echo "upload: nothing to do — the cluster arm already pushed the image"
+endif
 
 .PHONY: clean
 clean:
+ifeq ($(BUILD_TARGET),local)
 	docker rmi $(DOCKER_REGISTRY)/$(IMAGE):$(VERSION) || true
 	# docker builder prune -a -f
 	docker builder prune --max-used-space 21474836480 -f || true
 	rm -rf vendor
+else
+	@echo "clean: nothing to do — the cluster arm leaves nothing on this host"
+endif
 
 .PHONY: apply
 apply:
