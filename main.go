@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/bborbe/cqrs/base"
-	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	"github.com/bborbe/run"
 	libsentry "github.com/bborbe/sentry"
@@ -67,8 +66,9 @@ type application struct {
 	// writes, it just publishes nothing.
 	KafkaBrokers string `required:"false" arg:"kafka-brokers"       env:"KAFKA_BROKERS"       usage:"Comma separated Kafka brokers for change events. Empty = publishing disabled."`
 	// TopicPrefix selects the per-cluster topic: the event topic is
-	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID.
-	TopicPrefix string `required:"false" arg:"topic-prefix"        env:"TOPIC_PREFIX"        usage:"Kafka topic prefix for change events (dev: develop, prod: master)"`
+	// {prefix}-agent-task-v1-event, derived from lib.TaskV1SchemaID, and an empty
+	// prefix yields exactly "agent-task-v1-event" with no leading dash.
+	TopicPrefix string `required:"false" arg:"topic-prefix"        env:"TOPIC_PREFIX"        usage:"Kafka topic prefix for change events; empty = no prefix segment (one cluster per stage)"`
 	// EventBaselinePath persists the last commit whose changes were published.
 	// Empty keeps the baseline process-local, which means a restart adopts the
 	// current HEAD and every commit pushed while the process was down is never
@@ -118,10 +118,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	// both paths report ErrNotReady until it does.
 	taskPublisher := publisher.NewDeferred()
 
-	factory, err := a.emitterFactory(ctx, taskPublisher)
-	if err != nil {
-		return err
-	}
+	factory := a.emitterFactory(taskPublisher)
 	// A persisted baseline is what lets a restart resume where the previous
 	// process stopped. Without one the feed adopts the current HEAD, and every
 	// commit pushed while the process was down is skipped and never published.
@@ -198,8 +195,8 @@ func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 			<-ctx.Done()
 			return nil
 		}
-		// Brokers-without-prefix is rejected by emitterFactory before this runs, so a
-		// prefix is guaranteed here and this loop only has to survive an outage.
+		// The prefix may legitimately be empty (one cluster per stage), so this loop
+		// only has to survive a broker outage.
 		for {
 			taskPublisher, closer, err := publisher.NewKafkaTaskPublisher(
 				ctx,
@@ -229,26 +226,26 @@ func (a *application) publishTaskEvents(deferred *publisher.Deferred) run.Func {
 	}
 }
 
-// emitterFactory validates the change-event config and returns a constructor, or
-// nil when no broker is configured.
+// emitterFactory returns a constructor for the change-event emitter, or nil when
+// no broker is configured.
 //
 // It does not build the producer: the deferred handle owns that, because
 // NewSyncProducer blocks on an unreachable broker. The factory only assembles an
 // emitter over whatever publisher the handle holds, so the pull path and the write
 // path share one producer rather than each building its own.
 func (a *application) emitterFactory(
-	ctx context.Context,
 	taskPublisher publisher.TaskPublisher,
-) (func(ctx context.Context) (vaultapi.Emitter, func() error, error), error) {
+) func(ctx context.Context) (vaultapi.Emitter, func() error, error) {
 	if a.KafkaBrokers == "" {
-		return nil, nil
+		return nil
 	}
-	// With brokers set but no prefix the topic would be "-agent-task-v1-event",
-	// which is a config mistake rather than a transient failure, so it fails fast
-	// and loudly instead of publishing somewhere unintended.
-	if a.TopicPrefix == "" {
-		return nil, errors.Errorf(ctx, "topic-prefix is required when kafka-brokers is set")
-	}
+	// An empty prefix is a legitimate configuration, not a mistake: cqrs's
+	// base.TopicPrefix renders "" as no prefix segment and no leading dash, so the
+	// topic is exactly "agent-task-v1-event". A cluster that serves a single stage
+	// needs precisely that — the octopus agent lane runs one Strimzi cluster per
+	// stage and its executor consumes "agent-task-v1-event" with TOPIC_PREFIX empty.
+	// Requiring a prefix here would publish to "<prefix>-agent-task-v1-event", a
+	// topic nothing consumes, which reads as wired and delivers nothing.
 	return func(ctx context.Context) (vaultapi.Emitter, func() error, error) {
 		return vaultapi.NewEmitter(
 			vaultapi.Config{
@@ -263,7 +260,7 @@ func (a *application) emitterFactory(
 			vaultapi.NewGitDiffer(a.VaultPath),
 			taskPublisher,
 		), nil, nil
-	}, nil
+	}
 }
 
 // refresh rebuilds the index when the working tree's HEAD changes, or while the

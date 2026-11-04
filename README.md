@@ -62,3 +62,27 @@ make precommit
 ```
 
 The image is `docker.io/bborbe/vault-api`; `make build upload` publishes it from a tagged tree.
+
+### Building on a cluster
+
+`make build BUILD_TARGET=<cluster>` builds the image as a BuildKit Job inside a
+Kubernetes cluster instead of on the local Docker daemon, so a machine with no
+Docker installed can still publish. `REF` is the git ref the Job clones and
+`VERSION` is the tag it pushes; both are required, and `VERSION` has no usable
+default because the default resolves to the newest release tag.
+
+```bash
+make build BUILD_TARGET=sun REF=$(git rev-parse HEAD) VERSION=<tag>
+```
+
+`<tag>` is pushed to `docker.io/bborbe/vault-api`, so it replaces an existing
+tag of the same name — use a scratch tag such as `scratch-vault-api-20261103-1`
+unless you are deliberately publishing a release.
+
+`BUILD_TARGET` accepts `sun`, `nukedev`, `nukeprod`, or any kubectl context in
+the default kubeconfig. The Job clones the repository with a GitHub App
+installation token minted from the `git-app` secret in the `build` namespace and
+pushes with the `buildkit-push` secret there; override them with
+`BUILD_GIT_SECRET` and `BUILD_PUSH_SECRET`. `BUILD_TARGET` left at its default
+of `local` keeps the plain `docker build` path unchanged.
+
