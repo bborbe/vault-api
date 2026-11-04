@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- chore: update github.com/bborbe/agent to v0.138.0, github.com/bborbe/cqrs to v0.6.15, github.com/bborbe/errors to v1.6.6, github.com/bborbe/http to v1.26.32, github.com/bborbe/kafka to v1.29.11, github.com/bborbe/log to v1.7.6, github.com/bborbe/run to v1.11.10, github.com/bborbe/sentry to v1.10.7, github.com/bborbe/service to v1.11.2, github.com/bborbe/time to v1.27.25, github.com/bborbe/vault-cli to v0.186.2, github.com/onsi/ginkgo/v2 to v2.34.0
+
 ## v0.22.0
 
 - feat: **`make build BUILD_TARGET=<cluster>` builds the image as a BuildKit Job in a Kubernetes cluster**, so publishing no longer needs a local Docker daemon. `hack/build-cluster.sh` renders `hack/build-job.yaml`, applies it, waits for terminal state and prints the pushed digest; `hack/cluster-alias.sh` resolves the alias (`sun`, `nukedev`, `nukeprod`, or a literal kubectl context). `BUILD_TARGET` defaults to `local`, and the local `docker build` arm is unchanged.
