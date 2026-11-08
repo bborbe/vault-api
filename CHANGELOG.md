@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.2
 
 - fix: **the pull emitter tombstones a task's previous event key when a modified file changes its identifier** (a slug-addressed file gaining a `task_identifier`, or a `readdress`), so a compacted consumer view no longer keeps a ghost under the old key. Every tombstone in a batch now goes out before any upsert, so a rename or an identifier swap cannot drop a live task.
 
