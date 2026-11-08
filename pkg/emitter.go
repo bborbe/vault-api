@@ -103,8 +103,49 @@ func (e *emitter) emitOne(
 		}
 		return nil
 	}
+	if change.Status == ChangeModified {
+		if err := e.tombstoneOldKey(ctx, change, oldHead, task.TaskIdentifier); err != nil {
+			return err
+		}
+	}
 	if err := e.publisher.PublishChanged(ctx, task); err != nil {
 		return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
+	}
+	return nil
+}
+
+// tombstoneOldKey publishes a tombstone for the identifier a modified file
+// carried at oldHead when it differs from the one it carries now.
+//
+// The topic is compacted and keyed by task identifier, so an address change —
+// a slug-addressed file gaining a task_identifier, or a readdress — would
+// otherwise leave the old key's last record live forever: every later event
+// lands under the new key and nothing supersedes the old one. A consumer view
+// replaying the topic then holds a ghost task at whatever state it last had
+// (measured 2026-11-08: one such ghost drove 650+ re-spawns of a completed task).
+//
+// An old side that does not parse yields no identifier and therefore no
+// tombstone: the upsert still has to go out, and the same bytes will not parse
+// on a retry either.
+func (e *emitter) tombstoneOldKey(
+	ctx context.Context,
+	change Change,
+	oldHead string,
+	current lib.TaskIdentifier,
+) error {
+	content, err := e.differ.ReadAt(ctx, oldHead, change.Path)
+	if err != nil {
+		return errors.Wrapf(ctx, err, "read previous %s failed", change.Path)
+	}
+	previous, err := e.taskFromContent(ctx, change.Path, content)
+	if err != nil || previous.TaskIdentifier == current {
+		return nil
+	}
+	if err := e.publisher.PublishDeleted(ctx, previous.TaskIdentifier); err != nil {
+		return errors.Wrapf(
+			ctx, err, "publish tombstone for previous key %s of %s failed",
+			previous.TaskIdentifier, change.Path,
+		)
 	}
 	return nil
 }

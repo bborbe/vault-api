@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **the pull emitter tombstones a task's previous event key when a modified file changes its identifier**, so a compacted consumer view cannot keep a ghost under the old key. Covers a slug-addressed file gaining a `task_identifier` and a `readdress` (both arrive as a modified file). Before this, every later event landed under the new key and the old key's last record stayed live forever — on nukedev one such ghost held a completed task at `phase: execution` and drove 650+ executor re-spawns. A modified file that keeps its identifier publishes no tombstone; an old side that does not parse still upserts.
+
 ## v0.22.1
 
 - chore: update github.com/bborbe/agent to v0.138.0, github.com/bborbe/cqrs to v0.6.15, github.com/bborbe/errors to v1.6.6, github.com/bborbe/http to v1.26.32, github.com/bborbe/kafka to v1.29.11, github.com/bborbe/log to v1.7.6, github.com/bborbe/run to v1.11.10, github.com/bborbe/sentry to v1.10.7, github.com/bborbe/service to v1.11.2, github.com/bborbe/time to v1.27.25, github.com/bborbe/vault-cli to v0.186.2, github.com/onsi/ginkgo/v2 to v2.34.0

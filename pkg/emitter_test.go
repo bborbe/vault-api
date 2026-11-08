@@ -25,8 +25,11 @@ type fakeDiffer struct {
 
 	readAtContent []byte
 	readAtErr     error
-	readAtHead    string
-	readAtPath    string
+	// readAtByHead answers per commit when set, so a spec can give the old and the
+	// new side of one modified file different bytes.
+	readAtByHead map[string][]byte
+	readAtHead   string
+	readAtPath   string
 
 	diffCalls int
 }
@@ -39,6 +42,9 @@ func (f *fakeDiffer) Diff(_ context.Context, _ string, _ string) ([]vaultapi.Cha
 func (f *fakeDiffer) ReadAt(_ context.Context, head string, path string) ([]byte, error) {
 	f.readAtHead = head
 	f.readAtPath = path
+	if content, ok := f.readAtByHead[head]; ok {
+		return content, f.readAtErr
+	}
 	return f.readAtContent, f.readAtErr
 }
 
@@ -219,6 +225,92 @@ var _ = Describe("Emitter", func() {
 			cancel()
 
 			Expect(emitter.Emit(cancelled, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
+			Expect(publisher.changed).To(BeEmpty())
+		})
+
+		It("tombstones the slug key when a file gains a task_identifier", func() {
+			// A file first published without an identifier is keyed by its slug.
+			// Once it gains one, every later event is keyed by the identifier, so
+			// unless the slug key is tombstoned a compacted consumer view keeps the
+			// slug entry at whatever state it last had — forever.
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtByHead = map[string][]byte{
+				"aaaaaaa1": []byte("---\nstatus: in_progress\nphase: execution\n---\n# Body\n"),
+				"bbbbbbb2": []byte(taskFile),
+			}
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
+
+			Expect(publisher.deleted).To(Equal([]lib.TaskIdentifier{"probe-task"}))
+			Expect(publisher.changed).To(HaveLen(1))
+			Expect(
+				publisher.changed[0].TaskIdentifier,
+			).To(Equal(lib.TaskIdentifier(probeIdentifier)))
+			Expect(publisher.order).To(Equal([]string{"deleted", "changed"}))
+		})
+
+		It("tombstones the old identifier when a task is re-addressed", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtByHead = map[string][]byte{
+				"aaaaaaa1": []byte(
+					"---\ntask_identifier: old-identifier\nstatus: hold\n---\n# Body\n",
+				),
+				"bbbbbbb2": []byte(taskFile),
+			}
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
+
+			Expect(publisher.deleted).To(Equal([]lib.TaskIdentifier{"old-identifier"}))
+			Expect(publisher.changed).To(HaveLen(1))
+			Expect(publisher.order).To(Equal([]string{"deleted", "changed"}))
+		})
+
+		It("publishes no tombstone when a modified file keeps its identifier", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtByHead = map[string][]byte{
+				"aaaaaaa1": []byte(
+					"---\ntask_identifier: " + probeIdentifier + "\nstatus: in_progress\n---\n# Body\n",
+				),
+				"bbbbbbb2": []byte(taskFile),
+			}
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
+
+			Expect(publisher.deleted).To(BeEmpty())
+			Expect(publisher.changed).To(HaveLen(1))
+		})
+
+		It("still upserts when the old side does not parse", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtByHead = map[string][]byte{
+				"aaaaaaa1": []byte("no frontmatter here"),
+				"bbbbbbb2": []byte(taskFile),
+			}
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).To(Succeed())
+
+			Expect(publisher.changed).To(HaveLen(1))
+		})
+
+		It("returns the old-key tombstone publish error", func() {
+			differ.changes = []vaultapi.Change{
+				{Path: "25 Tasks/Probe Task.md", Status: vaultapi.ChangeModified},
+			}
+			differ.readAtByHead = map[string][]byte{
+				"aaaaaaa1": []byte("---\nstatus: hold\n---\n# Body\n"),
+				"bbbbbbb2": []byte(taskFile),
+			}
+			publisher.deletedErr = errors.New("kafka unavailable")
+
+			Expect(emitter.Emit(ctx, "aaaaaaa1", "bbbbbbb2")).NotTo(Succeed())
 			Expect(publisher.changed).To(BeEmpty())
 		})
 
