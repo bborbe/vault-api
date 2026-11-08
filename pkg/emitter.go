@@ -60,58 +60,115 @@ func (e *emitter) Emit(ctx context.Context, oldHead string, newHead string) erro
 	if err != nil {
 		return err
 	}
-	for _, change := range deletionsFirst(changes) {
-		// Each iteration publishes, which can block on the broker; stop promptly
-		// when the process is shutting down rather than draining the whole diff.
-		if err := ctx.Err(); err != nil {
+	ordered := deletionsFirst(changes)
+	// Two passes: every tombstone of the batch goes out before any upsert. A
+	// tombstone published after an upsert of the same key removes that task from
+	// a compacted view — a rename (delete + add sharing one identifier), two files
+	// swapping identifiers, or an added file taking over a key another file just
+	// left would all lose a live task if the passes were interleaved per file.
+	for _, change := range ordered {
+		if err := e.step(ctx, change, oldHead, newHead, e.emitTombstone); err != nil {
 			return err
 		}
-		if !e.isTaskPath(change.Path) {
-			continue
-		}
-		if err := e.emitOne(ctx, change, oldHead, newHead); err != nil {
+	}
+	for _, change := range ordered {
+		if err := e.step(ctx, change, oldHead, newHead, e.emitUpsert); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (e *emitter) emitOne(
+// step runs one pass's action for one change, skipping non-task paths and
+// stopping promptly on shutdown: each action publishes, which can block on the
+// broker, and draining the whole diff after cancellation helps no one.
+func (e *emitter) step(
+	ctx context.Context,
+	change Change,
+	oldHead string,
+	newHead string,
+	action func(context.Context, Change, string, string) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !e.isTaskPath(change.Path) {
+		return nil
+	}
+	return action(ctx, change, oldHead, newHead)
+}
+
+// emitTombstone publishes the tombstones a change implies: the identifier of a
+// deleted file, and the previous identifier of a modified file whose identifier
+// changed. An added file implies none.
+func (e *emitter) emitTombstone(
 	ctx context.Context,
 	change Change,
 	oldHead string,
 	newHead string,
 ) error {
+	if change.Status != ChangeDeleted && change.Status != ChangeModified {
+		return nil
+	}
+	task, ok, err := e.readTask(ctx, change, oldHead, newHead)
+	if err != nil || !ok {
+		return err
+	}
+	if change.Status == ChangeModified {
+		return e.tombstoneOldKey(ctx, change, oldHead, task.TaskIdentifier)
+	}
+	if err := e.publisher.PublishDeleted(ctx, task.TaskIdentifier); err != nil {
+		return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
+	}
+	return nil
+}
+
+// emitUpsert publishes the current state of an added or modified file.
+func (e *emitter) emitUpsert(
+	ctx context.Context,
+	change Change,
+	oldHead string,
+	newHead string,
+) error {
+	if change.Status == ChangeDeleted {
+		return nil
+	}
+	task, ok, err := e.readTask(ctx, change, oldHead, newHead)
+	if err != nil || !ok {
+		return err
+	}
+	if err := e.publisher.PublishChanged(ctx, task); err != nil {
+		return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
+	}
+	return nil
+}
+
+// readTask reads and parses the side of a change its event describes. It
+// reports ok=false, with no error, for content that does not parse.
+func (e *emitter) readTask(
+	ctx context.Context,
+	change Change,
+	oldHead string,
+	newHead string,
+) (lib.Task, bool, error) {
 	content, err := e.content(ctx, change, oldHead, newHead)
 	if err != nil {
 		// A read failure is transient — the object store is local, but a concurrent
 		// gc or an interrupted fetch can lose it for a moment. Return it so the
 		// caller keeps its baseline and retries the same diff, rather than advancing
 		// past an event that was never published.
-		return errors.Wrapf(ctx, err, "read %s for %s failed", change.Path, change.Status)
+		return lib.Task{}, false, errors.Wrapf(
+			ctx, err, "read %s for %s failed", change.Path, change.Status,
+		)
 	}
 	task, err := e.taskFromContent(ctx, change.Path, content)
 	if err != nil {
 		// Unparseable content is permanent: the same bytes will not parse on the
 		// next tick, so skip it and let the batch finish.
 		glog.Warningf("skip %s %s: %v", change.Status, change.Path, err)
-		return nil
+		return lib.Task{}, false, nil
 	}
-	if change.Status == ChangeDeleted {
-		if err := e.publisher.PublishDeleted(ctx, task.TaskIdentifier); err != nil {
-			return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
-		}
-		return nil
-	}
-	if change.Status == ChangeModified {
-		if err := e.tombstoneOldKey(ctx, change, oldHead, task.TaskIdentifier); err != nil {
-			return err
-		}
-	}
-	if err := e.publisher.PublishChanged(ctx, task); err != nil {
-		return errors.Wrapf(ctx, err, "publish %s %s failed", change.Status, change.Path)
-	}
-	return nil
+	return task, true, nil
 }
 
 // tombstoneOldKey publishes a tombstone for the identifier a modified file
