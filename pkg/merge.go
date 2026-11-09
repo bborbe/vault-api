@@ -369,13 +369,11 @@ func concatList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 // mid-body edit: concatenating two writers' rival prose produces a file neither
 // of them wrote, and a body-level contradiction is a human decision.
 //
-// An empty base makes the prefix test vacuous, so two independently written
-// bodies are concatenated rather than quarantined. For a frontmatter-only base
-// that is the intended append behaviour; for an add/add conflict — where the
-// base is absent rather than empty — it fuses two unrelated documents, which
-// this layer cannot distinguish from a frontmatter-only base because both
-// arrive as the empty string. A caller that knows the base is absent should
-// quarantine instead.
+// An empty base quarantines. The prefix test would otherwise be vacuous — every
+// pair of bodies looks like two appends — and an absent base means the file did
+// not exist in the merge base, so two different bodies are an add/add rather
+// than an append to common text. The one-sided cases still apply, so a side that
+// added nothing is taken from the other.
 func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (string, bool) {
 	switch {
 	case ours == theirs:
@@ -384,6 +382,15 @@ func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (strin
 		return theirs, true
 	case theirs == base:
 		return ours, true
+	}
+
+	// An empty base makes the prefix test vacuous: every pair of bodies would
+	// look like two appends. An absent base means the file did not exist in the
+	// merge base, so an add/add is a human decision, not an append to something
+	// neither writer saw. The one-sided cases above still apply, so a side that
+	// added nothing is taken from the other.
+	if base == "" {
+		return "", false
 	}
 
 	oursSuffix, oursOK := strings.CutPrefix(ours, base)

@@ -290,6 +290,34 @@ var _ = Describe("MergeFile", func() {
 			Expect(bodyOf(result.Content)).To(Equal("line\ntail A\ntail B"))
 		})
 
+		It("quarantines two different bodies against an empty base", func() {
+			// An absent base makes the prefix test vacuous, so every pair of
+			// bodies would look like two appends. Two different bodies against
+			// an empty base are an add/add — a human decision — and previously
+			// quarantined.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "## A\ntext A\n"), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "## B\ntext B\n"), CommitterTime: later},
+			)
+
+			Expect(result.Quarantine).To(BeTrue())
+			Expect(result.Reason).To(Equal(ReasonBodyConflict))
+		})
+
+		It("takes the one side that added a body when the base body is empty", func() {
+			// The empty-base quarantine must not swallow the one-sided case:
+			// a side that added nothing is still taken from the other.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "## B\ntext B\n"), CommitterTime: later},
+			)
+
+			Expect(result.Quarantine).To(BeFalse())
+			Expect(bodyOf(result.Content)).To(Equal("## B\ntext B\n"))
+		})
+
 		It("quarantines a delete against an edit", func() {
 			// ours deletes back to a prefix of base; theirs edits. One side is
 			// a prefix of the other, but base is not a common prefix of both,
