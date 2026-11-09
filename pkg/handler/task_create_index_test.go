@@ -243,20 +243,75 @@ var _ = Describe("Index.UpsertTask", func() {
 	})
 
 	It("clears one warning, not one per lookup key, when a previously invalid page becomes valid", func() {
+		// Two invalid pages, and a title whose name differs from its slug, so the
+		// expected count (1) is distinguishable from both alternatives: a per-key
+		// decrement would land on 0, and a title that slugifies to itself would make
+		// name and slug the same key, leaving only one to remove either way. The
+		// unrelated page is what makes the arithmetic visible — without it the
+		// `taskWarnings > 0` clamp hides an over-decrement at zero.
 		Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
-		Expect(os.WriteFile(
-			filepath.Join(vaultPath, "25 Tasks", "probe-alpha.md"),
-			[]byte("no frontmatter at all\n"),
-			0o600,
-		)).To(Succeed())
+		for _, name := range []string{"Probe Alpha", "Unrelated"} {
+			Expect(os.WriteFile(
+				filepath.Join(vaultPath, "25 Tasks", name+".md"),
+				[]byte("no frontmatter at all\n"),
+				0o600,
+			)).To(Succeed())
+		}
 		Expect(index.Build(ctx, newTestStore())).To(Succeed())
-		Expect(index.Readiness().Warnings).To(Equal(1))
+		Expect(index.Readiness().Warnings).To(Equal(2))
 
-		index.UpsertTask(page("in_progress"))
+		index.UpsertTask(domain.NewPage(
+			map[string]any{"task_identifier": "probe-1", "status": "in_progress"},
+			domain.FileMetadata{
+				Name:     "Probe Alpha",
+				FilePath: filepath.Join(vaultPath, "25 Tasks", "Probe Alpha.md"),
+			},
+			domain.Content("---\ntask_identifier: probe-1\nstatus: in_progress\n---\nbody\n"),
+		))
 
 		// buildTasks records the page under its name AND its slug but counts the
-		// warning once, so a per-key decrement would take two off here and leave
-		// /readiness reporting a warning that no longer describes the tree.
-		Expect(index.Readiness().Warnings).To(Equal(0))
+		// warning once, so a per-key decrement would take two off and report 0.
+		Expect(index.Readiness().Warnings).To(Equal(1),
+			"one page's warning cleared; the unrelated page's remains")
+	})
+
+	It("describes a page exactly as a full Build of the same file does", func() {
+		// Divergence between the incremental and full indexing paths is the failure
+		// mode this change exists to prevent, so the two are compared field by field.
+		// UpdatedAt is excluded on purpose: the incremental path stamps the injected
+		// clock while a Build reads the file's mtime, and only UpdatedSince filtering
+		// consumes it.
+		const body = "---\ntask_identifier: probe-1\nstatus: in_progress\n" +
+			"phase: planning\nassignee: agent-a\ngoals:\n  - '[[A Goal]]'\n---\nbody\n"
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(vaultPath, "25 Tasks", "Probe Alpha.md"), []byte(body), 0o600,
+		)).To(Succeed())
+
+		index.UpsertTask(domain.NewPage(
+			map[string]any{
+				"task_identifier": "probe-1",
+				"status":          "in_progress",
+				"phase":           "planning",
+				"assignee":        "agent-a",
+				"goals":           []any{"[[A Goal]]"},
+			},
+			domain.FileMetadata{
+				Name:     "Probe Alpha",
+				FilePath: filepath.Join(vaultPath, "25 Tasks", "Probe Alpha.md"),
+			},
+			domain.Content(body),
+		))
+		upserted, found, _ := index.GetTask("probe-1")
+		Expect(found).To(BeTrue())
+
+		Expect(index.Build(ctx, newTestStore())).To(Succeed())
+		built, found, _ := index.GetTask("probe-1")
+		Expect(found).To(BeTrue())
+
+		upserted.UpdatedAt = nil
+		built.UpdatedAt = nil
+		Expect(upserted).To(Equal(built),
+			"an incrementally indexed task must be indistinguishable from a built one")
 	})
 })

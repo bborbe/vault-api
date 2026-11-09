@@ -367,17 +367,36 @@ func (i *Index) UpsertTask(page *domain.Page) {
 	// openTasksByState after releasing the lock, so mutating an element of the
 	// published array would race with a reader that is still counting it. Replacing
 	// the slice leaves every array already handed out immutable.
+	// PATH first, identifier only as a fallback. Matching on the identifier alone
+	// would let an upsert evict a DIFFERENT page that happens to carry the same
+	// identifier — the index can hold such a pair after a stale-index create or an
+	// out-of-band edit — and leave the page being written with two entries. The path
+	// is what the write actually addressed; the identifier fallback keeps the
+	// rename case (same task, new file) replacing rather than duplicating.
+	replaceAt := -1
+	for idx, existing := range i.tasks {
+		if existing.Path == item.Path {
+			replaceAt = idx
+			break
+		}
+	}
+	if replaceAt < 0 {
+		for idx, existing := range i.tasks {
+			if existing.ID == item.ID {
+				replaceAt = idx
+				break
+			}
+		}
+	}
 	tasks := make([]TaskItem, 0, len(i.tasks)+1)
-	replaced := false
-	for _, existing := range i.tasks {
-		if !replaced && (existing.Path == item.Path || existing.ID == item.ID) {
+	for idx, existing := range i.tasks {
+		if idx == replaceAt {
 			tasks = append(tasks, item)
-			replaced = true
 			continue
 		}
 		tasks = append(tasks, existing)
 	}
-	if !replaced {
+	if replaceAt < 0 {
 		tasks = append(tasks, item)
 	}
 	byID := make(map[string]int, len(tasks))
