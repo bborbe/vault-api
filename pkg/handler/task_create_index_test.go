@@ -226,54 +226,60 @@ var _ = Describe("Index.UpsertTask", func() {
 		)
 	}
 
-	It("replaces the entry instead of adding a second one, and drops the stale set membership", func() {
-		index.UpsertTask(page("in_progress"))
-		index.UpsertTask(page("completed"))
+	It(
+		"replaces the entry instead of adding a second one, and drops the stale set membership",
+		func() {
+			index.UpsertTask(page("in_progress"))
+			index.UpsertTask(page("completed"))
 
-		task, found, _ := index.GetTask("probe-1")
-		Expect(found).To(BeTrue())
-		Expect(task.Status).To(Equal("completed"))
+			task, found, _ := index.GetTask("probe-1")
+			Expect(found).To(BeTrue())
+			Expect(task.Status).To(Equal("completed"))
 
-		every, _, _ := index.QueryTasks(vaultapi.TaskFilter{})
-		Expect(every).To(HaveLen(1), "the same page must not be indexed twice")
+			every, _, _ := index.QueryTasks(vaultapi.TaskFilter{})
+			Expect(every).To(HaveLen(1), "the same page must not be indexed twice")
 
-		stillOpen, _, _ := index.QueryTasks(vaultapi.TaskFilter{Status: "in_progress"})
-		Expect(stillOpen).To(BeEmpty(),
-			"the replaced entry's old status must leave the filter set")
-	})
+			stillOpen, _, _ := index.QueryTasks(vaultapi.TaskFilter{Status: "in_progress"})
+			Expect(stillOpen).To(BeEmpty(),
+				"the replaced entry's old status must leave the filter set")
+		},
+	)
 
-	It("clears one warning, not one per lookup key, when a previously invalid page becomes valid", func() {
-		// Two invalid pages, and a title whose name differs from its slug, so the
-		// expected count (1) is distinguishable from both alternatives: a per-key
-		// decrement would land on 0, and a title that slugifies to itself would make
-		// name and slug the same key, leaving only one to remove either way. The
-		// unrelated page is what makes the arithmetic visible — without it the
-		// `taskWarnings > 0` clamp hides an over-decrement at zero.
-		Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
-		for _, name := range []string{"Probe Alpha", "Unrelated"} {
-			Expect(os.WriteFile(
-				filepath.Join(vaultPath, "25 Tasks", name+".md"),
-				[]byte("no frontmatter at all\n"),
-				0o600,
-			)).To(Succeed())
-		}
-		Expect(index.Build(ctx, newTestStore())).To(Succeed())
-		Expect(index.Readiness().Warnings).To(Equal(2))
+	It(
+		"clears one warning, not one per lookup key, when a previously invalid page becomes valid",
+		func() {
+			// Two invalid pages, and a title whose name differs from its slug, so the
+			// expected count (1) is distinguishable from both alternatives: a per-key
+			// decrement would land on 0, and a title that slugifies to itself would make
+			// name and slug the same key, leaving only one to remove either way. The
+			// unrelated page is what makes the arithmetic visible — without it the
+			// `taskWarnings > 0` clamp hides an over-decrement at zero.
+			Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
+			for _, name := range []string{"Probe Alpha", "Unrelated"} {
+				Expect(os.WriteFile(
+					filepath.Join(vaultPath, "25 Tasks", name+".md"),
+					[]byte("no frontmatter at all\n"),
+					0o600,
+				)).To(Succeed())
+			}
+			Expect(index.Build(ctx, newTestStore())).To(Succeed())
+			Expect(index.Readiness().Warnings).To(Equal(2))
 
-		index.UpsertTask(domain.NewPage(
-			map[string]any{"task_identifier": "probe-1", "status": "in_progress"},
-			domain.FileMetadata{
-				Name:     "Probe Alpha",
-				FilePath: filepath.Join(vaultPath, "25 Tasks", "Probe Alpha.md"),
-			},
-			domain.Content("---\ntask_identifier: probe-1\nstatus: in_progress\n---\nbody\n"),
-		))
+			index.UpsertTask(domain.NewPage(
+				map[string]any{"task_identifier": "probe-1", "status": "in_progress"},
+				domain.FileMetadata{
+					Name:     "Probe Alpha",
+					FilePath: filepath.Join(vaultPath, "25 Tasks", "Probe Alpha.md"),
+				},
+				domain.Content("---\ntask_identifier: probe-1\nstatus: in_progress\n---\nbody\n"),
+			))
 
-		// buildTasks records the page under its name AND its slug but counts the
-		// warning once, so a per-key decrement would take two off and report 0.
-		Expect(index.Readiness().Warnings).To(Equal(1),
-			"one page's warning cleared; the unrelated page's remains")
-	})
+			// buildTasks records the page under its name AND its slug but counts the
+			// warning once, so a per-key decrement would take two off and report 0.
+			Expect(index.Readiness().Warnings).To(Equal(1),
+				"one page's warning cleared; the unrelated page's remains")
+		},
+	)
 
 	It("refuses a page the full build would exclude", func() {
 		// A page with an unknown status is excluded by buildTasks. The write path
