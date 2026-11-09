@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **two appends a blank line apart now merge instead of quarantining.** `mergeBody`'s append test was a strict byte prefix (`strings.CutPrefix`), so a side whose copy of the common body differed only by blank-line placement — which the vault writer normalises — failed the test and quarantined. Measured on the 2026-11-02 OpenClaw incident's own 21 conflicted files: all 20 mixed-shape files still quarantined on v0.22.5 with `body conflict outside the frontmatter`, and comparing with blank lines and trailing spaces ignored showed all 21 were appends. The comparison now falls back to line-wise, blank-line- and trailing-space-insensitive matching; a rewrite, a deletion or a mid-body edit still quarantines.
+
 ## v0.22.5
 
 - fix: **a task is readable by identifier immediately after the create that wrote it.** `handleCreateTask` wrote the file and answered 201, but the read path resolves identifiers through the in-memory index, and the index was rebuilt only when the working tree's HEAD moved on the refresh ticker. A caller that created a task and then addressed it therefore got a 404 for a task that existed, for up to one refresh interval. Measured on dev 2026-11-09: `agent-task-executor`'s probe publishes `create-task` and `update-frontmatter` back to back, the update ran 4 ms after the create, and it was dropped with `update-frontmatter: task not found`. `Index.UpsertTask` now records the task a create or reopen wrote — through the same `taskItem` conversion a full build uses, so the two cannot describe one task differently — and both create arms call it with the bytes that landed. It does not make the read path lenient: nothing is recorded for an identifier no file carries, so a genuine miss still answers 404.

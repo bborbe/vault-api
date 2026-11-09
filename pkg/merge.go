@@ -374,6 +374,64 @@ func concatList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 // not exist in the merge base, so two different bodies are an add/add rather
 // than an append to common text. The one-sided cases still apply, so a side that
 // added nothing is taken from the other.
+// appendSuffix returns the part of side that follows base, and whether side is
+// an append to base at all.
+//
+// A byte prefix is the strict case and is tried first. When that fails the two
+// are compared line-for-line with blank lines and trailing spaces ignored,
+// because the vault writer normalises blank lines between the merge base and a
+// writer's own copy: the 2026-11-02 OpenClaw incident produced twenty bodies
+// that differed from their base only by a blank line before "## Failure" and
+// then appended a section. A byte comparison quarantined every one of them;
+// they are appends, and this is the comparison that says so.
+//
+// Only blank lines and trailing whitespace are ignored. A side that removes,
+// reorders or rewrites a line still fails the comparison, so a delete-vs-edit
+// or a genuine rewrite continues to quarantine rather than resolving silently.
+func appendSuffix(base, side string) (string, bool) {
+	if suffix, ok := strings.CutPrefix(side, base); ok {
+		return suffix, true
+	}
+
+	baseLines := strings.Split(base, "\n")
+	sideLines := strings.Split(side, "\n")
+
+	significant := func(lines []string) []string {
+		out := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if trimmed := strings.TrimRight(line, " \t\r"); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	}
+
+	baseSignificant := significant(baseLines)
+	sideSignificant := significant(sideLines)
+	if len(baseSignificant) == 0 || len(sideSignificant) < len(baseSignificant) {
+		return "", false
+	}
+	for i := range baseSignificant {
+		if baseSignificant[i] != sideSignificant[i] {
+			return "", false
+		}
+	}
+
+	// Cut after the side line holding base's last significant line, so the
+	// suffix keeps whatever blank lines the writer put between the two.
+	seen := 0
+	for i, line := range sideLines {
+		if strings.TrimRight(line, " \t\r") == "" {
+			continue
+		}
+		seen++
+		if seen == len(baseSignificant) {
+			return strings.Join(sideLines[i+1:], "\n"), true
+		}
+	}
+	return "", false
+}
+
 func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (string, bool) {
 	switch {
 	case ours == theirs:
@@ -393,8 +451,8 @@ func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (strin
 		return "", false
 	}
 
-	oursSuffix, oursOK := strings.CutPrefix(ours, base)
-	theirsSuffix, theirsOK := strings.CutPrefix(theirs, base)
+	oursSuffix, oursOK := appendSuffix(base, ours)
+	theirsSuffix, theirsOK := appendSuffix(base, theirs)
 	if !oursOK || !theirsOK {
 		// Not both appends after the same base. A delete-vs-edit lands here:
 		// one side may be a prefix of the other, but base is not a prefix of
