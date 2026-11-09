@@ -189,6 +189,178 @@ var _ = Describe("MergeFile", func() {
 		Expect(result.Reason).To(Equal(ReasonBodyConflict))
 	})
 
+	// bodyOf returns the merged body, so a spec asserts on the body without
+	// depending on how render formats the frontmatter it rebuilds.
+	bodyOf := func(content []byte) string {
+		parsed, ok := parseFile(content)
+		Expect(ok).To(BeTrue())
+		return parsed.body
+	}
+
+	const (
+		bodyBase  = "## Notes\n\nseeded\n"
+		bodyPlan  = "## Plan\n\n{\"pr_url\": \"x\"}\n"
+		bodyResol = "## Resolution\n\n- **Verdict:** merged\n"
+		fmPrefix  = "---\ncluster: sun\n---\n"
+	)
+
+	Context("a body both sides appended to after a common base", func() {
+		It("keeps both appends, ordered by committer time rather than byte order", func() {
+			// CommitterTime order is deliberately the REVERSE of byte order:
+			// "## Plan" sorts before "## Resolution", so a lexicographic sort
+			// yields Plan-then-Resolution and fails here.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: later},
+			)
+
+			Expect(result.Quarantine).To(BeFalse())
+			Expect(bodyOf(result.Content)).To(Equal(bodyBase + bodyResol + bodyPlan))
+		})
+
+		It("is orientation-independent", func() {
+			// Two nodes merging one divergence see opposite ours/theirs. They
+			// must write identical bytes or they re-quarantine on the next sync.
+			forward := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: later},
+			)
+			swapped := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: later},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
+			)
+
+			Expect(forward.Quarantine).To(BeFalse())
+			Expect(swapped.Quarantine).To(BeFalse())
+			Expect(bodyOf(swapped.Content)).To(Equal(bodyOf(forward.Content)))
+		})
+
+		It("breaks a committer-time tie by suffix bytes, ascending", func() {
+			forward := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: earlier},
+			)
+
+			Expect(forward.Quarantine).To(BeFalse())
+			Expect(bodyOf(forward.Content)).To(Equal(bodyBase + bodyPlan + bodyResol))
+
+			// The tie-break is the branch most at risk of being
+			// orientation-dependent, so it is checked swapped as well.
+			swapped := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
+			)
+
+			Expect(swapped.Quarantine).To(BeFalse())
+			Expect(bodyOf(swapped.Content)).To(Equal(bodyOf(forward.Content)))
+		})
+
+		It("does not double a section both sides appended", func() {
+			// The longer suffix is deliberately the EARLIER commit, so a
+			// "later side wins" rule would drop bodyResol and fail: only
+			// "longer side wins outright" satisfies this.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: later},
+				Side{
+					Content:       []byte(fmPrefix + bodyBase + bodyPlan + bodyResol),
+					CommitterTime: earlier,
+				},
+			)
+
+			Expect(result.Quarantine).To(BeFalse())
+			Expect(bodyOf(result.Content)).To(Equal(bodyBase + bodyPlan + bodyResol))
+		})
+
+		It("separates two appends when the first has no trailing newline", func() {
+			// A body need not end in a newline, and the suffixes are joined
+			// raw, so without a separator the two sections fuse into one line.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix + "line\n"), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "line\ntail A"), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "line\ntail B"), CommitterTime: later},
+			)
+
+			Expect(result.Quarantine).To(BeFalse())
+			Expect(bodyOf(result.Content)).To(Equal("line\ntail A\ntail B"))
+		})
+
+		It("quarantines two different bodies against an empty base", func() {
+			// An absent base makes the prefix test vacuous, so every pair of
+			// bodies would look like two appends. Two different bodies against
+			// an empty base are an add/add — a human decision — and previously
+			// quarantined.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "## A\ntext A\n"), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "## B\ntext B\n"), CommitterTime: later},
+			)
+
+			Expect(result.Quarantine).To(BeTrue())
+			Expect(result.Reason).To(Equal(ReasonBodyConflict))
+		})
+
+		It("takes the one side that added a body when the base body is empty", func() {
+			// The empty-base quarantine must not swallow the one-sided case:
+			// a side that added nothing is still taken from the other.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "## B\ntext B\n"), CommitterTime: later},
+			)
+
+			Expect(result.Quarantine).To(BeFalse())
+			Expect(bodyOf(result.Content)).To(Equal("## B\ntext B\n"))
+		})
+
+		It("quarantines a delete against an edit", func() {
+			// ours deletes back to a prefix of base; theirs edits. One side is
+			// a prefix of the other, but base is not a common prefix of both,
+			// so the longer-side rule must not fire and resolve it silently.
+			result := MergeFile(
+				Side{
+					Content:       []byte(fmPrefix + "## Notes\n\nseeded\nmore\n"),
+					CommitterTime: earlier,
+				},
+				Side{Content: []byte(fmPrefix + "## Notes\n\nseeded\n"), CommitterTime: earlier},
+				Side{
+					Content:       []byte(fmPrefix + "## Notes\n\nseeded\nedited\n"),
+					CommitterTime: later,
+				},
+			)
+
+			Expect(result.Quarantine).To(BeTrue())
+			Expect(result.Reason).To(Equal(ReasonBodyConflict))
+		})
+	})
+
+	It("lets a lifecycle contradiction win over a mergeable body", func() {
+		// The bodies are disjoint appends and would merge; the status values
+		// are contradictory, so mergeKeys must quarantine before mergeBody runs.
+		result := MergeFile(
+			Side{
+				Content:       []byte("---\nstatus: in_progress\n---\n" + bodyBase),
+				CommitterTime: earlier,
+			},
+			Side{
+				Content:       []byte("---\nstatus: completed\n---\n" + bodyBase + bodyResol),
+				CommitterTime: earlier,
+			},
+			Side{
+				Content:       []byte("---\nstatus: aborted\n---\n" + bodyBase + bodyPlan),
+				CommitterTime: later,
+			},
+		)
+
+		Expect(result.Quarantine).To(BeTrue())
+		Expect(result.Reason).To(Equal(ReasonLifecycle))
+	})
+
 	It("quarantines a side whose frontmatter does not parse", func() {
 		result := MergeFile(
 			Side{Content: []byte("---\ncurrent_job: a\n---\nb\n"), CommitterTime: earlier},

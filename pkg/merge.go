@@ -27,7 +27,9 @@ type MergeReason string
 const (
 	// ReasonUnparsable names a side whose frontmatter does not parse.
 	ReasonUnparsable MergeReason = "frontmatter does not parse"
-	// ReasonBodyConflict names a body both sides changed differently.
+	// ReasonBodyConflict names a body both sides changed in a way no rule can
+	// merge: a rewrite, a deletion, or a mid-body edit. Two appends after a
+	// common base merge instead, and do not reach this reason.
 	ReasonBodyConflict MergeReason = "body conflict outside the frontmatter"
 	// ReasonLifecycle names status/phase edits that are not a legal transition.
 	ReasonLifecycle MergeReason = "lifecycle fields are not a legal transition"
@@ -53,9 +55,13 @@ type MergeResult struct {
 //
 // The merge is per frontmatter key, never per line: a key edited on one side
 // only is kept, and a key edited on both sides follows the rule its field class
-// names. A body both sides changed differently is not merged at all — it
-// quarantines, because concatenating two writers' prose produces a file neither
-// of them wrote.
+// names. A body only one side changed, or both sides changed identically, is
+// taken as-is. A body both sides changed differently is kept only when both
+// changes are appends after a common base: the two appended sections are
+// concatenated, ordered by committer time so the result does not depend on which
+// side the caller calls "ours". A rewrite, a deletion or a mid-body edit
+// quarantines, because concatenating two writers' rival prose produces a file
+// neither of them wrote.
 //
 // This function performs no I/O. The pull path supplies the three sides and
 // writes the merged bytes through whatever write path it owns.
@@ -84,7 +90,13 @@ func MergeFile(base, ours, theirs Side) MergeResult {
 		return MergeResult{Quarantine: true, Reason: reason}
 	}
 
-	body, ok := mergeBody(baseFile.body, oursFile.body, theirsFile.body)
+	body, ok := mergeBody(
+		baseFile.body,
+		oursFile.body,
+		theirsFile.body,
+		ours.CommitterTime,
+		theirs.CommitterTime,
+	)
 	if !ok {
 		return MergeResult{Quarantine: true, Reason: ReasonBodyConflict}
 	}
@@ -339,9 +351,30 @@ func concatList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 	return stringListNode(append(append([]string{}, oursItems...), theirsItems...)), true, ""
 }
 
-// mergeBody takes a side's body when only one side changed it. Two different
-// changes are a human decision, so they quarantine.
-func mergeBody(base, ours, theirs string) (string, bool) {
+// mergeBody merges the three body strings. A body only one side changed, or both
+// sides changed identically, is taken as-is.
+//
+// When both sides changed it differently, the change is kept only if it is an
+// append after a common base: base must be a prefix of both sides, and the two
+// appended suffixes are concatenated. They are ordered by committer time — not by
+// which side the caller calls "ours" — so two nodes merging the same divergence
+// in opposite orientation produce byte-identical output rather than mirror images
+// that re-quarantine on the next sync. Equal times are broken by the suffix
+// bytes, ascending, so the order stays total.
+//
+// If one suffix is a prefix of the other, the longer side wins outright: two
+// nodes appending the same section must not write it twice.
+//
+// Everything else quarantines. That includes a rewrite, a deletion, and a
+// mid-body edit: concatenating two writers' rival prose produces a file neither
+// of them wrote, and a body-level contradiction is a human decision.
+//
+// An empty base quarantines. The prefix test would otherwise be vacuous — every
+// pair of bodies looks like two appends — and an absent base means the file did
+// not exist in the merge base, so two different bodies are an add/add rather
+// than an append to common text. The one-sided cases still apply, so a side that
+// added nothing is taken from the other.
+func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (string, bool) {
 	switch {
 	case ours == theirs:
 		return ours, true
@@ -349,9 +382,44 @@ func mergeBody(base, ours, theirs string) (string, bool) {
 		return theirs, true
 	case theirs == base:
 		return ours, true
-	default:
+	}
+
+	// An empty base makes the prefix test vacuous: every pair of bodies would
+	// look like two appends. An absent base means the file did not exist in the
+	// merge base, so an add/add is a human decision, not an append to something
+	// neither writer saw. The one-sided cases above still apply, so a side that
+	// added nothing is taken from the other.
+	if base == "" {
 		return "", false
 	}
+
+	oursSuffix, oursOK := strings.CutPrefix(ours, base)
+	theirsSuffix, theirsOK := strings.CutPrefix(theirs, base)
+	if !oursOK || !theirsOK {
+		// Not both appends after the same base. A delete-vs-edit lands here:
+		// one side may be a prefix of the other, but base is not a prefix of
+		// both, so the longer-side rule must not fire and resolve it silently.
+		return "", false
+	}
+
+	switch {
+	case strings.HasPrefix(theirsSuffix, oursSuffix):
+		return theirs, true
+	case strings.HasPrefix(oursSuffix, theirsSuffix):
+		return ours, true
+	}
+
+	first, second := oursSuffix, theirsSuffix
+	if theirsTime.Before(oursTime) || (theirsTime.Equal(oursTime) && theirsSuffix < oursSuffix) {
+		first, second = theirsSuffix, oursSuffix
+	}
+	// A body need not end in a newline, and the suffixes are joined raw, so
+	// without this separator two sections would fuse into one line. Ordering is
+	// already fixed above, so the decision is orientation-independent.
+	if !strings.HasSuffix(first, "\n") && !strings.HasPrefix(second, "\n") {
+		first += "\n"
+	}
+	return base + first + second, true
 }
 
 // render rebuilds the file from the merged keys and body. ok is false when the
