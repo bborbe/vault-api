@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.5
 
 - fix: **a task is readable by identifier immediately after the create that wrote it.** `handleCreateTask` wrote the file and answered 201, but the read path resolves identifiers through the in-memory index, and the index was rebuilt only when the working tree's HEAD moved on the refresh ticker. A caller that created a task and then addressed it therefore got a 404 for a task that existed, for up to one refresh interval. Measured on dev 2026-11-09: `agent-task-executor`'s probe publishes `create-task` and `update-frontmatter` back to back, the update ran 4 ms after the create, and it was dropped with `update-frontmatter: task not found`. `Index.UpsertTask` now records the task a create or reopen wrote — through the same `taskItem` conversion a full build uses, so the two cannot describe one task differently — and both create arms call it with the bytes that landed. It does not make the read path lenient: nothing is recorded for an identifier no file carries, so a genuine miss still answers 404.
 
