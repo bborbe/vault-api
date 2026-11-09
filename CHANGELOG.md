@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.6
 
 - fix: **two appends a blank line apart now merge instead of quarantining.** `mergeBody`'s append test was a strict byte prefix (`strings.CutPrefix`), so a side whose copy of the common body differed only by blank-line placement — which the vault writer normalises — failed the test and quarantined. Measured on the 2026-11-02 OpenClaw incident's own 21 conflicted files: all 20 mixed-shape files still quarantined on v0.22.5 with `body conflict outside the frontmatter`, and comparing with blank lines and trailing spaces ignored showed all 21 were appends. The comparison now falls back to line-wise, blank-line- and trailing-space-insensitive matching; a rewrite, a deletion or a mid-body edit still quarantines.
 
