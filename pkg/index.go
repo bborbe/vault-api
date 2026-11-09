@@ -391,15 +391,21 @@ func (i *Index) UpsertTask(page *domain.Page) {
 	// A page that previously failed to parse is indexed now, so its warning entry
 	// has to go: leaving it would keep a healthy task reported as invalid, and
 	// leaving the count alone would keep /readiness reporting a warning that no
-	// longer describes the tree. Both keys are counted separately because
-	// buildTasks records each invalid page under its name AND its slug.
+	// longer describes the tree.
+	//
+	// ⚠️ The count decrements ONCE per page, never once per key. buildTasks records
+	// each invalid page under its name AND its slug but increments taskWarnings
+	// once, so decrementing per key would take two off for one page and make
+	// /readiness under-report the remaining warnings.
+	warned := false
 	for _, key := range []string{item.Title, slugify(item.Title)} {
 		if _, present := i.invalidTasks[key]; present {
 			delete(i.invalidTasks, key)
-			if i.taskWarnings > 0 {
-				i.taskWarnings--
-			}
+			warned = true
 		}
+	}
+	if warned && i.taskWarnings > 0 {
+		i.taskWarnings--
 	}
 	// Counted under the lock for the same reason the slice is fresh: the map must
 	// describe the index as it stood when this write committed, not a state a

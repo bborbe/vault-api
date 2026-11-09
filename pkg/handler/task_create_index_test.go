@@ -192,14 +192,17 @@ var _ = Describe("Create then address the created task", func() {
 // directly against the index.
 var _ = Describe("Index.UpsertTask", func() {
 	var (
+		ctx       context.Context
 		vaultPath string
 		index     *vaultapi.Index
 	)
 
 	BeforeEach(func() {
+		ctx = context.Background()
 		var err error
 		vaultPath, err = os.MkdirTemp("", "vault-api-upsert")
 		Expect(err).To(BeNil())
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "24 Goals"), 0o700)).To(Succeed())
 		index = vaultapi.NewIndex(vaultapi.Config{
 			VaultPath: vaultPath,
 			VaultName: "test",
@@ -237,5 +240,23 @@ var _ = Describe("Index.UpsertTask", func() {
 		stillOpen, _, _ := index.QueryTasks(vaultapi.TaskFilter{Status: "in_progress"})
 		Expect(stillOpen).To(BeEmpty(),
 			"the replaced entry's old status must leave the filter set")
+	})
+
+	It("clears one warning, not one per lookup key, when a previously invalid page becomes valid", func() {
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "25 Tasks"), 0o700)).To(Succeed())
+		Expect(os.WriteFile(
+			filepath.Join(vaultPath, "25 Tasks", "probe-alpha.md"),
+			[]byte("no frontmatter at all\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(index.Build(ctx, newTestStore())).To(Succeed())
+		Expect(index.Readiness().Warnings).To(Equal(1))
+
+		index.UpsertTask(page("in_progress"))
+
+		// buildTasks records the page under its name AND its slug but counts the
+		// warning once, so a per-key decrement would take two off here and leave
+		// /readiness reporting a warning that no longer describes the tree.
+		Expect(index.Readiness().Warnings).To(Equal(0))
 	})
 })
