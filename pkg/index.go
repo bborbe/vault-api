@@ -15,6 +15,7 @@ import (
 
 	"github.com/bborbe/vault-cli/pkg/domain"
 	"github.com/bborbe/vault-cli/pkg/storage"
+	"github.com/golang/glog"
 )
 
 // Config locates the vault working tree and the directories the index reads.
@@ -84,6 +85,18 @@ type Index struct {
 	// Readiness reports the index unusable.
 	built bool
 	head  string
+	// generation counts every commit to the index — a Build swap and an UpsertTask
+	// alike. A Build reads the tree outside the lock, so it captures this before
+	// reading and refuses its own swap if a write committed in between; without it
+	// a slow rebuild would silently undo a create that landed while it was reading.
+	generation uint64
+}
+
+// currentGeneration reads the commit counter under the lock.
+func (i *Index) currentGeneration() uint64 {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.generation
 }
 
 type indexSet map[string]map[int]struct{}
@@ -147,6 +160,11 @@ func NewIndex(cfg Config, metrics Metrics) *Index {
 // Before that mark existed a pod that had built once answered ready forever, and
 // handleReadiness's 503 branch was unreachable.
 func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
+	// Snapshot the generation BEFORE the reads. They run outside the lock and take
+	// seconds over a full vault, so a create can land in between; committing this
+	// build's snapshot would then overwrite that create's upsert with a view of the
+	// tree that predates it, re-opening the 404 the upsert exists to close.
+	generation := i.currentGeneration()
 	tasks, taskInvalid, taskWarnings, taskByID, sets, err := i.buildTasks(ctx, store)
 	if err != nil {
 		i.markUnbuilt()
@@ -159,6 +177,21 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	}
 
 	i.mu.Lock()
+	if i.generation != generation {
+		// A write committed while this build was reading. Committing the snapshot
+		// would drop it, so the build is abandoned rather than applied: the index
+		// keeps serving what it had (which includes the write), `head` stays behind
+		// the tree, and the refresh loop rebuilds on its next tick.
+		i.mu.Unlock()
+		glog.Warningf(
+			"index build abandoned: a write committed while it was reading; "+
+				"keeping the current index (generation %d -> %d)",
+			generation,
+			i.currentGeneration(),
+		)
+		return nil
+	}
+	i.generation++
 	i.tasks = tasks
 	i.taskByID = taskByID
 	i.invalidTasks = taskInvalid
@@ -302,27 +335,133 @@ func (i *Index) buildTasks(
 
 		idx := len(tasks)
 		tasks = append(tasks, item)
-		byID[item.ID] = idx
-		byID[page.Name] = idx
-		byID[slugify(page.Name)] = idx
-		sets.assignee.add(item.Assignee, idx)
-		sets.status.add(item.Status, idx)
-		sets.phase.add(item.Phase, idx)
-		if item.Cluster != nil {
-			sets.cluster.add(*item.Cluster, idx)
-		}
-		if item.TaskType != "" {
-			sets.taskType.add(item.TaskType, idx)
-		}
-		if item.ShortID != "" {
-			sets.shortID.add(item.ShortID, idx)
-		}
-		for _, goal := range item.Goals {
-			sets.goal.add(goalKey(goal), idx)
-		}
+		registerTask(byID, sets, item, idx)
 	}
 
 	return tasks, invalid, warnings, byID, sets, nil
+}
+
+// registerTask records one task's lookup keys and filter sets at position idx.
+// It is shared by the full build and the incremental upsert so the two cannot
+// disagree about which keys address a task or which set it belongs to.
+func registerTask(byID map[string]int, sets taskSets, item TaskItem, idx int) {
+	byID[item.ID] = idx
+	byID[item.Title] = idx
+	byID[slugify(item.Title)] = idx
+	sets.assignee.add(item.Assignee, idx)
+	sets.status.add(item.Status, idx)
+	sets.phase.add(item.Phase, idx)
+	if item.Cluster != nil {
+		sets.cluster.add(*item.Cluster, idx)
+	}
+	if item.TaskType != "" {
+		sets.taskType.add(item.TaskType, idx)
+	}
+	if item.ShortID != "" {
+		sets.shortID.add(item.ShortID, idx)
+	}
+	for _, goal := range item.Goals {
+		sets.goal.add(goalKey(goal), idx)
+	}
+}
+
+// UpsertTask adds or replaces the indexed task for page. The write path calls it
+// after a create or a reopen, so the task it just wrote is readable by
+// identifier immediately.
+//
+// Without it, a create and the read that follows it disagree for up to one
+// refresh interval. The create writes the file and answers 201; the read path
+// resolves identifiers through this index; and the index is rebuilt only when
+// the working tree's HEAD moves, on the refresh ticker. A caller that creates a
+// task and then addresses it — the executor's probe publishes create-task and
+// update-frontmatter back to back — therefore gets a 404 for a task that exists,
+// and the follow-up write is dropped. Measured on dev 2026-11-09: the update ran
+// 4 ms after the create and reported "task not found".
+//
+// It does NOT make a genuine miss resolvable: nothing is recorded for an
+// identifier no file carries, so an unknown identifier still answers 404. That
+// distinction is the point — the read path must stay able to say "no such task",
+// which is why the create answers with the task it stored rather than the read
+// path being made lenient.
+//
+// The byID map and the filter sets are rebuilt from the slice rather than
+// patched in place: a replace has to drop the old item's keys and set
+// memberships, and rebuilding is O(tasks) over memory already held, with no file
+// read — the cost this index exists to avoid is I/O, not map writes.
+func (i *Index) UpsertTask(page *domain.Page) {
+	item, _, ok := i.taskItem(page)
+	if !ok {
+		// A page the full build would exclude must not enter through the write
+		// path either: the two have to agree about what is indexed.
+		return
+	}
+	i.mu.Lock()
+	// A FRESH slice, never an in-place write. Build hands its slice to
+	// openTasksByState after releasing the lock, so mutating an element of the
+	// published array would race with a reader that is still counting it. Replacing
+	// the slice leaves every array already handed out immutable.
+	// Matched by PATH, and by nothing else. The path is what the write actually
+	// addressed, so replacing on it cannot touch a different page. An identifier
+	// fallback looks helpful for a rename and is not: prepareCreateFrontmatter
+	// already refuses a create whose identifier is carried at another path, and that
+	// guard is not atomic with this upsert — so two racing creates sharing one
+	// identifier could reach the fallback and evict each other's entry, leaving both
+	// files sharing an address until the next Build.
+	replaceAt := -1
+	for idx, existing := range i.tasks {
+		if existing.Path == item.Path {
+			replaceAt = idx
+			break
+		}
+	}
+	tasks := make([]TaskItem, 0, len(i.tasks)+1)
+	for idx, existing := range i.tasks {
+		if idx == replaceAt {
+			tasks = append(tasks, item)
+			continue
+		}
+		tasks = append(tasks, existing)
+	}
+	if replaceAt < 0 {
+		tasks = append(tasks, item)
+	}
+	byID := make(map[string]int, len(tasks))
+	sets := newTaskSets()
+	for idx, task := range tasks {
+		registerTask(byID, sets, task, idx)
+	}
+	i.generation++
+	i.tasks = tasks
+	i.taskByID = byID
+	i.taskSets = sets
+	// A page that previously failed to parse is indexed now, so its warning entry
+	// has to go: leaving it would keep a healthy task reported as invalid, and
+	// leaving the count alone would keep /readiness reporting a warning that no
+	// longer describes the tree.
+	//
+	// ⚠️ The count decrements ONCE per page, never once per key. buildTasks records
+	// each invalid page under its name AND its slug but increments taskWarnings
+	// once, so decrementing per key would take two off for one page and make
+	// /readiness under-report the remaining warnings.
+	warned := false
+	for _, key := range []string{item.Title, slugify(item.Title)} {
+		if _, present := i.invalidTasks[key]; present {
+			delete(i.invalidTasks, key)
+			warned = true
+		}
+	}
+	if warned && i.taskWarnings > 0 {
+		i.taskWarnings--
+	}
+	// Counted under the lock for the same reason the slice is fresh: the map must
+	// describe the index as it stood when this write committed, not a state a
+	// concurrent upsert has since replaced.
+	counts := openTasksByState(tasks)
+	i.mu.Unlock()
+
+	// Published after the swap, like Build, so a scrape never sees the new counts
+	// against the old index.
+	i.metrics.SetOpenTasks(counts)
 }
 
 // taskItem converts one page into a TaskItem. ok is false when the page must be
