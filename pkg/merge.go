@@ -55,12 +55,13 @@ type MergeResult struct {
 //
 // The merge is per frontmatter key, never per line: a key edited on one side
 // only is kept, and a key edited on both sides follows the rule its field class
-// names. A body only one side changed is taken as-is. A body both sides changed
-// is kept only when both changes are appends after a common base: the two
-// appended sections are concatenated, ordered by committer time so the result
-// does not depend on which side the caller calls "ours". A rewrite, a deletion
-// or a mid-body edit quarantines, because concatenating two writers' rival prose
-// produces a file neither of them wrote.
+// names. A body only one side changed, or both sides changed identically, is
+// taken as-is. A body both sides changed differently is kept only when both
+// changes are appends after a common base: the two appended sections are
+// concatenated, ordered by committer time so the result does not depend on which
+// side the caller calls "ours". A rewrite, a deletion or a mid-body edit
+// quarantines, because concatenating two writers' rival prose produces a file
+// neither of them wrote.
 //
 // This function performs no I/O. The pull path supplies the three sides and
 // writes the merged bytes through whatever write path it owns.
@@ -350,14 +351,14 @@ func concatList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 	return stringListNode(append(append([]string{}, oursItems...), theirsItems...)), true, ""
 }
 
-// mergeBody merges the three body strings. A body only one side changed is
-// taken as-is.
+// mergeBody merges the three body strings. A body only one side changed, or both
+// sides changed identically, is taken as-is.
 //
-// When both sides changed it, the change is kept only if it is an append after a
-// common base: base must be a prefix of both sides, and the two appended
-// suffixes are concatenated. They are ordered by committer time — not by which
-// side the caller calls "ours" — so two nodes merging the same divergence in
-// opposite orientation produce byte-identical output rather than mirror images
+// When both sides changed it differently, the change is kept only if it is an
+// append after a common base: base must be a prefix of both sides, and the two
+// appended suffixes are concatenated. They are ordered by committer time — not by
+// which side the caller calls "ours" — so two nodes merging the same divergence
+// in opposite orientation produce byte-identical output rather than mirror images
 // that re-quarantine on the next sync. Equal times are broken by the suffix
 // bytes, ascending, so the order stays total.
 //
@@ -367,6 +368,14 @@ func concatList(ours, theirs *yaml.Node) (*yaml.Node, bool, MergeReason) {
 // Everything else quarantines. That includes a rewrite, a deletion, and a
 // mid-body edit: concatenating two writers' rival prose produces a file neither
 // of them wrote, and a body-level contradiction is a human decision.
+//
+// An empty base makes the prefix test vacuous, so two independently written
+// bodies are concatenated rather than quarantined. For a frontmatter-only base
+// that is the intended append behaviour; for an add/add conflict — where the
+// base is absent rather than empty — it fuses two unrelated documents, which
+// this layer cannot distinguish from a frontmatter-only base because both
+// arrive as the empty string. A caller that knows the base is absent should
+// quarantine instead.
 func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (string, bool) {
 	switch {
 	case ours == theirs:
@@ -396,6 +405,12 @@ func mergeBody(base, ours, theirs string, oursTime, theirsTime time.Time) (strin
 	first, second := oursSuffix, theirsSuffix
 	if theirsTime.Before(oursTime) || (theirsTime.Equal(oursTime) && theirsSuffix < oursSuffix) {
 		first, second = theirsSuffix, oursSuffix
+	}
+	// A body need not end in a newline, and the suffixes are joined raw, so
+	// without this separator two sections would fuse into one line. Ordering is
+	// already fixed above, so the decision is orientation-independent.
+	if !strings.HasSuffix(first, "\n") && !strings.HasPrefix(second, "\n") {
+		first += "\n"
 	}
 	return base + first + second, true
 }

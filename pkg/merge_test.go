@@ -239,30 +239,55 @@ var _ = Describe("MergeFile", func() {
 		})
 
 		It("breaks a committer-time tie by suffix bytes, ascending", func() {
-			result := MergeFile(
+			forward := MergeFile(
 				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
 				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
 				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: earlier},
+			)
+
+			Expect(forward.Quarantine).To(BeFalse())
+			Expect(bodyOf(forward.Content)).To(Equal(bodyBase + bodyPlan + bodyResol))
+
+			// The tie-break is the branch most at risk of being
+			// orientation-dependent, so it is checked swapped as well.
+			swapped := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyResol), CommitterTime: earlier},
+			)
+
+			Expect(swapped.Quarantine).To(BeFalse())
+			Expect(bodyOf(swapped.Content)).To(Equal(bodyOf(forward.Content)))
+		})
+
+		It("does not double a section both sides appended", func() {
+			// The longer suffix is deliberately the EARLIER commit, so a
+			// "later side wins" rule would drop bodyResol and fail: only
+			// "longer side wins outright" satisfies this.
+			result := MergeFile(
+				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: later},
+				Side{
+					Content:       []byte(fmPrefix + bodyBase + bodyPlan + bodyResol),
+					CommitterTime: earlier,
+				},
 			)
 
 			Expect(result.Quarantine).To(BeFalse())
 			Expect(bodyOf(result.Content)).To(Equal(bodyBase + bodyPlan + bodyResol))
 		})
 
-		It("does not double a section both sides appended", func() {
-			// One side's suffix is a strict prefix of the other's: the longer
-			// side wins outright, so the shared section is written once.
+		It("separates two appends when the first has no trailing newline", func() {
+			// A body need not end in a newline, and the suffixes are joined
+			// raw, so without a separator the two sections fuse into one line.
 			result := MergeFile(
-				Side{Content: []byte(fmPrefix + bodyBase), CommitterTime: earlier},
-				Side{Content: []byte(fmPrefix + bodyBase + bodyPlan), CommitterTime: earlier},
-				Side{
-					Content:       []byte(fmPrefix + bodyBase + bodyPlan + bodyResol),
-					CommitterTime: later,
-				},
+				Side{Content: []byte(fmPrefix + "line\n"), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "line\ntail A"), CommitterTime: earlier},
+				Side{Content: []byte(fmPrefix + "line\ntail B"), CommitterTime: later},
 			)
 
 			Expect(result.Quarantine).To(BeFalse())
-			Expect(bodyOf(result.Content)).To(Equal(bodyBase + bodyPlan + bodyResol))
+			Expect(bodyOf(result.Content)).To(Equal("line\ntail A\ntail B"))
 		})
 
 		It("quarantines a delete against an edit", func() {
