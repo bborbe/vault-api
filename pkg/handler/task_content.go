@@ -560,6 +560,7 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			})
 			return
 		}
+		indexCreatedTask(deps, path, frontmatter, rendered)
 		writeJSON(w, http.StatusCreated, TaskDocument{
 			ID:          fmt.Sprint(frontmatter["task_identifier"]),
 			Title:       title,
@@ -567,6 +568,38 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			Body:        request.Body,
 		})
 	}
+}
+
+// indexCreatedTask records the task a create or reopen just wrote, so the read
+// path resolves it at once.
+//
+// It is called only after the write landed, and only with the bytes that landed:
+// the index is fed the same frontmatter and content the file holds, through the
+// same taskItem conversion a full build uses, so the two cannot describe the
+// task differently.
+//
+// Skipping it is what made a create and the read that follows it disagree for up
+// to one refresh interval: the index is rebuilt only when the working tree's
+// HEAD moves, and a caller that creates a task and then addresses it — the
+// executor's probe publishes create-task and update-frontmatter back to back —
+// got a 404 for a task that existed. Measured on dev 2026-11-09: the update ran
+// 4 ms after the create and was dropped with "task not found".
+func indexCreatedTask(
+	deps writeDeps,
+	path string,
+	frontmatter map[string]any,
+	rendered string,
+) {
+	modified := deps.clock.Now().Time()
+	deps.index.UpsertTask(domain.NewPage(
+		frontmatter,
+		domain.FileMetadata{
+			Name:         strings.TrimSuffix(filepath.Base(path), ".md"),
+			FilePath:     filepath.Join(deps.vaultPath, filepath.FromSlash(path)),
+			ModifiedDate: &modified,
+		},
+		domain.Content(rendered),
+	))
 }
 
 // occupantAtPath reads the page that actually occupies a title path and returns
@@ -682,6 +715,7 @@ func reopenTerminalTask(
 		})
 		return
 	}
+	indexCreatedTask(deps, path, frontmatter, rendered)
 	writeJSON(w, http.StatusOK, TaskDocument{
 		ID:          fmt.Sprint(frontmatter["task_identifier"]),
 		Title:       strings.TrimSpace(request.Title),

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **a task is readable by identifier immediately after the create that wrote it.** `handleCreateTask` wrote the file and answered 201, but the read path resolves identifiers through the in-memory index, and the index was rebuilt only when the working tree's HEAD moved on the refresh ticker. A caller that created a task and then addressed it therefore got a 404 for a task that existed, for up to one refresh interval. Measured on dev 2026-11-09: `agent-task-executor`'s probe publishes `create-task` and `update-frontmatter` back to back, the update ran 4 ms after the create, and it was dropped with `update-frontmatter: task not found`. `Index.UpsertTask` now records the task a create or reopen wrote — through the same `taskItem` conversion a full build uses, so the two cannot describe one task differently — and both create arms call it with the bytes that landed. It does not make the read path lenient: nothing is recorded for an identifier no file carries, so a genuine miss still answers 404.
+
 ## v0.22.3
 
 - fix: **a body both sides appended to after a common base now merges to the union instead of quarantining.** `mergeBody` compared whole body strings, so it could not tell "different" from "conflicting" — two writers appending different sections to one vault file quarantined even though the sections did not overlap and both belonged in the result. The two appended suffixes are now concatenated, ordered by committer time so two nodes merging the same divergence write identical bytes rather than mirror images that re-quarantine on the next sync. A strict prefix takes the longer side, so a shared section is never written twice. A rewrite, a deletion, a mid-body edit, and a frontmatter lifecycle contradiction all still quarantine — `mergeKeys` keeps running first, so a genuine contradiction is never resolved by a body rule.

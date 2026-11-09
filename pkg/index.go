@@ -302,27 +302,95 @@ func (i *Index) buildTasks(
 
 		idx := len(tasks)
 		tasks = append(tasks, item)
-		byID[item.ID] = idx
-		byID[page.Name] = idx
-		byID[slugify(page.Name)] = idx
-		sets.assignee.add(item.Assignee, idx)
-		sets.status.add(item.Status, idx)
-		sets.phase.add(item.Phase, idx)
-		if item.Cluster != nil {
-			sets.cluster.add(*item.Cluster, idx)
-		}
-		if item.TaskType != "" {
-			sets.taskType.add(item.TaskType, idx)
-		}
-		if item.ShortID != "" {
-			sets.shortID.add(item.ShortID, idx)
-		}
-		for _, goal := range item.Goals {
-			sets.goal.add(goalKey(goal), idx)
-		}
+		registerTask(byID, sets, item, idx)
 	}
 
 	return tasks, invalid, warnings, byID, sets, nil
+}
+
+// registerTask records one task's lookup keys and filter sets at position idx.
+// It is shared by the full build and the incremental upsert so the two cannot
+// disagree about which keys address a task or which set it belongs to.
+func registerTask(byID map[string]int, sets taskSets, item TaskItem, idx int) {
+	byID[item.ID] = idx
+	byID[item.Title] = idx
+	byID[slugify(item.Title)] = idx
+	sets.assignee.add(item.Assignee, idx)
+	sets.status.add(item.Status, idx)
+	sets.phase.add(item.Phase, idx)
+	if item.Cluster != nil {
+		sets.cluster.add(*item.Cluster, idx)
+	}
+	if item.TaskType != "" {
+		sets.taskType.add(item.TaskType, idx)
+	}
+	if item.ShortID != "" {
+		sets.shortID.add(item.ShortID, idx)
+	}
+	for _, goal := range item.Goals {
+		sets.goal.add(goalKey(goal), idx)
+	}
+}
+
+// UpsertTask adds or replaces the indexed task for page. The write path calls it
+// after a create or a reopen, so the task it just wrote is readable by
+// identifier immediately.
+//
+// Without it, a create and the read that follows it disagree for up to one
+// refresh interval. The create writes the file and answers 201; the read path
+// resolves identifiers through this index; and the index is rebuilt only when
+// the working tree's HEAD moves, on the refresh ticker. A caller that creates a
+// task and then addresses it — the executor's probe publishes create-task and
+// update-frontmatter back to back — therefore gets a 404 for a task that exists,
+// and the follow-up write is dropped. Measured on dev 2026-11-09: the update ran
+// 4 ms after the create and reported "task not found".
+//
+// It does NOT make a genuine miss resolvable: nothing is recorded for an
+// identifier no file carries, so an unknown identifier still answers 404. That
+// distinction is the point — the read path must stay able to say "no such task",
+// which is why the create answers with the task it stored rather than the read
+// path being made lenient.
+//
+// The byID map and the filter sets are rebuilt from the slice rather than
+// patched in place: a replace has to drop the old item's keys and set
+// memberships, and rebuilding is O(tasks) over memory already held, with no file
+// read — the cost this index exists to avoid is I/O, not map writes.
+func (i *Index) UpsertTask(page *domain.Page) {
+	item, _, ok := i.taskItem(page)
+	if !ok {
+		// A page the full build would exclude must not enter through the write
+		// path either: the two have to agree about what is indexed.
+		return
+	}
+	i.mu.Lock()
+	replaced := false
+	for idx := range i.tasks {
+		if i.tasks[idx].Path == item.Path || i.tasks[idx].ID == item.ID {
+			i.tasks[idx] = item
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		i.tasks = append(i.tasks, item)
+	}
+	byID := make(map[string]int, len(i.tasks))
+	sets := newTaskSets()
+	for idx, task := range i.tasks {
+		registerTask(byID, sets, task, idx)
+	}
+	i.taskByID = byID
+	i.taskSets = sets
+	// A page that previously failed to parse is indexed now, so its warning entry
+	// has to go: leaving it would keep a healthy task reported as invalid.
+	delete(i.invalidTasks, item.Title)
+	delete(i.invalidTasks, slugify(item.Title))
+	tasks := i.tasks
+	i.mu.Unlock()
+
+	// Published after the swap, like Build, so a scrape never sees the new counts
+	// against the old index.
+	i.metrics.SetOpenTasks(openTasksByState(tasks))
 }
 
 // taskItem converts one page into a TaskItem. ok is false when the page must be
