@@ -15,6 +15,7 @@ import (
 
 	"github.com/bborbe/vault-cli/pkg/domain"
 	"github.com/bborbe/vault-cli/pkg/storage"
+	"github.com/golang/glog"
 )
 
 // Config locates the vault working tree and the directories the index reads.
@@ -84,6 +85,18 @@ type Index struct {
 	// Readiness reports the index unusable.
 	built bool
 	head  string
+	// generation counts every commit to the index — a Build swap and an UpsertTask
+	// alike. A Build reads the tree outside the lock, so it captures this before
+	// reading and refuses its own swap if a write committed in between; without it
+	// a slow rebuild would silently undo a create that landed while it was reading.
+	generation uint64
+}
+
+// currentGeneration reads the commit counter under the lock.
+func (i *Index) currentGeneration() uint64 {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.generation
 }
 
 type indexSet map[string]map[int]struct{}
@@ -147,6 +160,11 @@ func NewIndex(cfg Config, metrics Metrics) *Index {
 // Before that mark existed a pod that had built once answered ready forever, and
 // handleReadiness's 503 branch was unreachable.
 func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
+	// Snapshot the generation BEFORE the reads. They run outside the lock and take
+	// seconds over a full vault, so a create can land in between; committing this
+	// build's snapshot would then overwrite that create's upsert with a view of the
+	// tree that predates it, re-opening the 404 the upsert exists to close.
+	generation := i.currentGeneration()
 	tasks, taskInvalid, taskWarnings, taskByID, sets, err := i.buildTasks(ctx, store)
 	if err != nil {
 		i.markUnbuilt()
@@ -159,6 +177,21 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	}
 
 	i.mu.Lock()
+	if i.generation != generation {
+		// A write committed while this build was reading. Committing the snapshot
+		// would drop it, so the build is abandoned rather than applied: the index
+		// keeps serving what it had (which includes the write), `head` stays behind
+		// the tree, and the refresh loop rebuilds on its next tick.
+		i.mu.Unlock()
+		glog.Warningf(
+			"index build abandoned: a write committed while it was reading; "+
+				"keeping the current index (generation %d -> %d)",
+			generation,
+			i.currentGeneration(),
+		)
+		return nil
+	}
+	i.generation++
 	i.tasks = tasks
 	i.taskByID = taskByID
 	i.invalidTasks = taskInvalid
@@ -367,25 +400,18 @@ func (i *Index) UpsertTask(page *domain.Page) {
 	// openTasksByState after releasing the lock, so mutating an element of the
 	// published array would race with a reader that is still counting it. Replacing
 	// the slice leaves every array already handed out immutable.
-	// PATH first, identifier only as a fallback. Matching on the identifier alone
-	// would let an upsert evict a DIFFERENT page that happens to carry the same
-	// identifier — the index can hold such a pair after a stale-index create or an
-	// out-of-band edit — and leave the page being written with two entries. The path
-	// is what the write actually addressed; the identifier fallback keeps the
-	// rename case (same task, new file) replacing rather than duplicating.
+	// Matched by PATH, and by nothing else. The path is what the write actually
+	// addressed, so replacing on it cannot touch a different page. An identifier
+	// fallback looks helpful for a rename and is not: prepareCreateFrontmatter
+	// already refuses a create whose identifier is carried at another path, and that
+	// guard is not atomic with this upsert — so two racing creates sharing one
+	// identifier could reach the fallback and evict each other's entry, leaving both
+	// files sharing an address until the next Build.
 	replaceAt := -1
 	for idx, existing := range i.tasks {
 		if existing.Path == item.Path {
 			replaceAt = idx
 			break
-		}
-	}
-	if replaceAt < 0 {
-		for idx, existing := range i.tasks {
-			if existing.ID == item.ID {
-				replaceAt = idx
-				break
-			}
 		}
 	}
 	tasks := make([]TaskItem, 0, len(i.tasks)+1)
@@ -404,6 +430,7 @@ func (i *Index) UpsertTask(page *domain.Page) {
 	for idx, task := range tasks {
 		registerTask(byID, sets, task, idx)
 	}
+	i.generation++
 	i.tasks = tasks
 	i.taskByID = byID
 	i.taskSets = sets

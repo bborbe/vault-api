@@ -275,6 +275,16 @@ var _ = Describe("Index.UpsertTask", func() {
 			"one page's warning cleared; the unrelated page's remains")
 	})
 
+	It("refuses a page the full build would exclude", func() {
+		// A page with an unknown status is excluded by buildTasks. The write path
+		// must not admit it, or the two indexing paths would disagree about what is
+		// addressable — and a created task would be resolvable by an API that would
+		// not list it.
+		index.UpsertTask(page("nonsense"))
+		_, found, _ := index.GetTask("probe-1")
+		Expect(found).To(BeFalse())
+	})
+
 	It("describes a page exactly as a full Build of the same file does", func() {
 		// Divergence between the incremental and full indexing paths is the failure
 		// mode this change exists to prevent, so the two are compared field by field.
