@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.4
 
 - fix: **a create that reopens a terminal task is no longer refused by the identifier-uniqueness guard.** `prepareCreateFrontmatter` rejected any caller-supplied `task_identifier` the index already resolved, and the reopen route reaches it carrying the *occupant's own* identifier — so the page being replaced counted as a duplicate of itself and every reopen answered `409 task_exists` naming the identifier the caller had just sent. The answer is indistinguishable at the caller from "the title is occupied", which is what the controller reports, so a probe re-creating the record it owns could never get past it: measured 2026-11-09 on nuke prod, all 17 `-prod` probe lanes were refused inside one 27-second window — only three failure lines reached the log, because that line passes the result sender's 10-second rate sampler — while every record stayed at its 2026-10-26 state. The page at the target path is now exempt, because that write replaces it; an identifier carried by a *different* page is still refused, which is the collision the guard exists for.
 
