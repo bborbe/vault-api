@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **a body both sides appended to after a common base now merges to the union instead of quarantining.** `mergeBody` compared whole body strings, so it could not tell "different" from "conflicting" — two writers appending different sections to one vault file quarantined even though the sections did not overlap and both belonged in the result. The two appended suffixes are now concatenated, ordered by committer time so two nodes merging the same divergence write identical bytes rather than mirror images that re-quarantine on the next sync. A strict prefix takes the longer side, so a shared section is never written twice. A rewrite, a deletion, a mid-body edit, and a frontmatter lifecycle contradiction all still quarantine — `mergeKeys` keeps running first, so a genuine contradiction is never resolved by a body rule.
+
 ## v0.22.2
 
 - fix: **the pull emitter tombstones a task's previous event key when a modified file changes its identifier** (a slug-addressed file gaining a `task_identifier`, or a `readdress`), so a compacted consumer view no longer keeps a ghost under the old key. Every tombstone in a batch now goes out before any upsert, so a rename or an identifier swap cannot drop a live task.
