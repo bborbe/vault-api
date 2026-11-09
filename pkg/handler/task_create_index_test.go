@@ -15,6 +15,7 @@ import (
 	"time"
 
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/vault-cli/pkg/domain"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -182,5 +183,59 @@ var _ = Describe("Create then address the created task", func() {
 			http.MethodPatch, "/api/v1/tasks/never-created", `{"trigger_count":0}`,
 		)
 		Expect(missingPatch.Code).To(Equal(http.StatusNotFound))
+	})
+})
+
+// UpsertTask's replace branch is the one that can leak a stale lookup key or a
+// stale filter-set membership, and no create exercises it (a second create for
+// the same title is refused before the index is touched). It is pinned here
+// directly against the index.
+var _ = Describe("Index.UpsertTask", func() {
+	var (
+		vaultPath string
+		index     *vaultapi.Index
+	)
+
+	BeforeEach(func() {
+		var err error
+		vaultPath, err = os.MkdirTemp("", "vault-api-upsert")
+		Expect(err).To(BeNil())
+		index = vaultapi.NewIndex(vaultapi.Config{
+			VaultPath: vaultPath,
+			VaultName: "test",
+			TasksDir:  "25 Tasks",
+			GoalsDir:  "24 Goals",
+		}, fakeMetrics{})
+	})
+
+	AfterEach(func() {
+		Expect(os.RemoveAll(vaultPath)).To(Succeed())
+	})
+
+	page := func(status string) *domain.Page {
+		return domain.NewPage(
+			map[string]any{"task_identifier": "probe-1", "status": status},
+			domain.FileMetadata{
+				Name:     "probe-alpha",
+				FilePath: filepath.Join(vaultPath, "25 Tasks", "probe-alpha.md"),
+			},
+			domain.Content("---\ntask_identifier: probe-1\nstatus: "+status+"\n---\nbody\n"),
+		)
+	}
+
+	It("replaces the entry instead of adding a second one, and drops the stale set membership", func() {
+		index.UpsertTask(page("in_progress"))
+		index.UpsertTask(page("completed"))
+
+		task, found, _ := index.GetTask("probe-1")
+		Expect(found).To(BeTrue())
+		Expect(task.Status).To(Equal("completed"))
+
+		every, _, _ := index.QueryTasks(vaultapi.TaskFilter{})
+		Expect(every).To(HaveLen(1), "the same page must not be indexed twice")
+
+		stillOpen, _, _ := index.QueryTasks(vaultapi.TaskFilter{Status: "in_progress"})
+		Expect(stillOpen).To(BeEmpty(),
+			"the replaced entry's old status must leave the filter set")
 	})
 })

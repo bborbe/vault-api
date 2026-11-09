@@ -363,34 +363,53 @@ func (i *Index) UpsertTask(page *domain.Page) {
 		return
 	}
 	i.mu.Lock()
+	// A FRESH slice, never an in-place write. Build hands its slice to
+	// openTasksByState after releasing the lock, so mutating an element of the
+	// published array would race with a reader that is still counting it. Replacing
+	// the slice leaves every array already handed out immutable.
+	tasks := make([]TaskItem, 0, len(i.tasks)+1)
 	replaced := false
-	for idx := range i.tasks {
-		if i.tasks[idx].Path == item.Path || i.tasks[idx].ID == item.ID {
-			i.tasks[idx] = item
+	for _, existing := range i.tasks {
+		if !replaced && (existing.Path == item.Path || existing.ID == item.ID) {
+			tasks = append(tasks, item)
 			replaced = true
-			break
+			continue
 		}
+		tasks = append(tasks, existing)
 	}
 	if !replaced {
-		i.tasks = append(i.tasks, item)
+		tasks = append(tasks, item)
 	}
-	byID := make(map[string]int, len(i.tasks))
+	byID := make(map[string]int, len(tasks))
 	sets := newTaskSets()
-	for idx, task := range i.tasks {
+	for idx, task := range tasks {
 		registerTask(byID, sets, task, idx)
 	}
+	i.tasks = tasks
 	i.taskByID = byID
 	i.taskSets = sets
 	// A page that previously failed to parse is indexed now, so its warning entry
-	// has to go: leaving it would keep a healthy task reported as invalid.
-	delete(i.invalidTasks, item.Title)
-	delete(i.invalidTasks, slugify(item.Title))
-	tasks := i.tasks
+	// has to go: leaving it would keep a healthy task reported as invalid, and
+	// leaving the count alone would keep /readiness reporting a warning that no
+	// longer describes the tree. Both keys are counted separately because
+	// buildTasks records each invalid page under its name AND its slug.
+	for _, key := range []string{item.Title, slugify(item.Title)} {
+		if _, present := i.invalidTasks[key]; present {
+			delete(i.invalidTasks, key)
+			if i.taskWarnings > 0 {
+				i.taskWarnings--
+			}
+		}
+	}
+	// Counted under the lock for the same reason the slice is fresh: the map must
+	// describe the index as it stood when this write committed, not a state a
+	// concurrent upsert has since replaced.
+	counts := openTasksByState(tasks)
 	i.mu.Unlock()
 
 	// Published after the swap, like Build, so a scrape never sees the new counts
 	// against the old index.
-	i.metrics.SetOpenTasks(openTasksByState(tasks))
+	i.metrics.SetOpenTasks(counts)
 }
 
 // taskItem converts one page into a TaskItem. ok is false when the page must be
