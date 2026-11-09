@@ -712,9 +712,21 @@ func prepareCreateFrontmatter(
 	// A caller-supplied identifier is accepted only when nothing answers to it. Two
 	// pages sharing one identifier make one of them unaddressable: the index
 	// resolves whichever it saw last, so the other silently disappears.
+	//
+	// ⚠️ The page AT `path` is exempt, because this write replaces it. A reopen
+	// reaches here with the occupant's own identifier — the whole point is to
+	// rewrite that record — and counting it as a duplicate of itself refused every
+	// reopen with a 409 that named the caller's own identifier. That answer is
+	// indistinguishable at the caller from "the title is occupied", so a probe
+	// re-creating the record it already owns could never get past it (measured
+	// 2026-11-09 on nuke prod: three probe lanes logged `title "probe-…" occupied`
+	// and three more failed silently behind a log sampler). An identifier carried
+	// by a DIFFERENT page is still refused — that is the collision this guard
+	// exists to catch.
 	if supplied, present := frontmatter["task_identifier"]; present {
 		identifier := fmt.Sprint(supplied)
-		if _, found, _ := deps.index.GetTask(identifier); found {
+		if existing, found, _ := deps.index.GetTask(identifier); found &&
+			filepath.ToSlash(existing.Path) != path {
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"error": "task_exists",
 				"id":    identifier,
