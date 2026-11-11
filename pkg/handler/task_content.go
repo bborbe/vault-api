@@ -509,34 +509,7 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 		}
 		path := filepath.ToSlash(filepath.Join(deps.tasksDir, title+".md"))
 		if _, err := os.Stat(filepath.Join(deps.vaultPath, filepath.FromSlash(path))); err == nil {
-			// The title path is occupied, and the right answer depends on the
-			// occupant — so the refusal names it. It used to answer with `id: title`,
-			// which is the address the caller had just sent: the caller learned
-			// nothing it did not already know, and could not tell "same task,
-			// terminal, reopen" from "different task, disambiguate the title"
-			// without a second read it had no address for.
-			// ⚠️ Resolved by PATH, never through index.GetTask(title). That is a
-			// shared address space — identifier, name and slug all resolve there —
-			// so a page whose task_identifier equals this title wins the lookup,
-			// and this branch would then judge ITS status and overwrite the file at
-			// `path`, which belongs to a different task. Reachable through the API
-			// in three calls: create "Bravo" carrying task_identifier "Alpha" (its
-			// file is Bravo.md, so nothing collides), create "Alpha" carrying
-			// task_identifier "task-1", then reopen "Alpha" — GetTask resolves to
-			// Bravo, reads its terminal status, and a 200 replaces the live Alpha.md.
-			occupant, found := occupantAtPath(ctx, deps, title)
-			if !found || request.Reopen != reopenTerminal {
-				writeTaskExists(w, path, occupant, found)
-				return
-			}
-			if !vaultapi.IsTerminalStatus(occupant.Status) {
-				// A live occupant holds the path. Reopening one would let two
-				// attempts share an identity, which is the collision the vault's
-				// terminal-status rule exists to prevent.
-				writeTaskExists(w, path, occupant, true)
-				return
-			}
-			reopenTerminalTask(ctx, w, deps, request, path)
+			answerOccupiedPath(ctx, w, deps, request, title, path)
 			return
 		}
 		frontmatter, ok := prepareCreateFrontmatter(w, deps, request.Frontmatter, path)
@@ -568,6 +541,58 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			Body:        request.Body,
 		})
 	}
+}
+
+// answerOccupiedPath answers a create whose title path is already taken, and the
+// right answer depends on the occupant — so the refusal names it. It used to
+// answer with `id: title`, which is the address the caller had just sent: the
+// caller learned nothing it did not already know, and could not tell "same task,
+// terminal, reopen" from "different task, disambiguate the title" without a
+// second read it had no address for.
+//
+// ⚠️ The occupant is resolved by PATH, never through index.GetTask(title). That is
+// a shared address space — identifier, name and slug all resolve there — so a page
+// whose task_identifier equals this title wins the lookup, and this branch would
+// then judge ITS status and overwrite the file at `path`, which belongs to a
+// different task. Reachable through the API in three calls: create "Bravo"
+// carrying task_identifier "Alpha" (its file is Bravo.md, so nothing collides),
+// create "Alpha" carrying task_identifier "task-1", then reopen "Alpha" — GetTask
+// resolves to Bravo, reads its terminal status, and a 200 replaces the live
+// Alpha.md.
+func answerOccupiedPath(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps writeDeps,
+	request createRequest,
+	title string,
+	path string,
+) {
+	occupant, found := occupantAtPath(ctx, deps, title)
+	if !found || request.Reopen != reopenTerminal {
+		writeTaskExists(w, path, occupant, found)
+		return
+	}
+	if vaultapi.IsTerminalStatus(occupant.Status) {
+		reopenTerminalTask(ctx, w, deps, request, path)
+		return
+	}
+	// A live occupant holds the path. Reopening one would let two attempts share an
+	// identity, which is the collision the vault's terminal-status rule exists to
+	// prevent.
+	//
+	// A probe record is the one exception, and it is not an exception to that rule
+	// but the case the rule mis-reads: a probe is re-driven on every tick with the
+	// SAME identifier, so a live probe occupant is not a second attempt sharing an
+	// identity — it is this attempt, re-issued. Refusing it kills the lane's probe
+	// silently for as long as the record parks (measured 2026-11-11:
+	// `probe-service-analysis-agent-dev` parked at human_review, every later tick
+	// refused with `title … occupied`). isProbeReopen holds the exception to the
+	// identifier test.
+	if isProbeReopen(request, occupant) {
+		reopenTerminalTask(ctx, w, deps, request, path)
+		return
+	}
+	writeTaskExists(w, path, occupant, true)
 }
 
 // indexCreatedTask records the task a create or reopen just wrote, so the read
@@ -642,11 +667,40 @@ func occupantAtPath(
 	if raw, present := frontmatter["task_identifier"]; present {
 		identifier = fmt.Sprint(raw)
 	}
+	// task_type is carried for isProbeReopen, which compares it to one literal. It
+	// is read raw rather than normalised: this handler owns no task_type vocabulary,
+	// and inventing one here would make the probe predicate disagree with whatever
+	// writes the field.
+	taskType := ""
+	if raw, present := frontmatter["task_type"]; present {
+		taskType = fmt.Sprint(raw)
+	}
 	return vaultapi.TaskItem{
-		ID:     identifier,
-		Title:  title,
-		Status: status,
+		ID:       identifier,
+		Title:    title,
+		Status:   status,
+		TaskType: taskType,
 	}, true
+}
+
+// probeTaskType is the task_type of a healthcheck probe record: a page that is
+// rewritten in place by every tick of the probe that owns it, rather than once
+// per attempt.
+const probeTaskType = "healthcheck"
+
+// isProbeReopen reports whether a NON-terminal occupant may be replaced because it
+// is a probe record being re-driven by its own tick.
+//
+// The identity guarantee is the identifier test: the request must carry the
+// occupant's OWN task_identifier. Two different identifiers at one path still
+// collide exactly as before, and the recurring carve-out is untouched — it lives
+// in the controller and is keyed on terminal status, so it never reaches here.
+func isProbeReopen(request createRequest, occupant vaultapi.TaskItem) bool {
+	if occupant.TaskType != probeTaskType || occupant.ID == "" {
+		return false
+	}
+	supplied, present := request.Frontmatter["task_identifier"]
+	return present && fmt.Sprint(supplied) == occupant.ID
 }
 
 // writeTaskExists answers a create that collided, naming the occupant rather than
@@ -679,7 +733,8 @@ func writeTaskExists(
 	writeJSON(w, http.StatusConflict, payload)
 }
 
-// reopenTerminal replaces a task whose status is terminal with the request's own
+// reopenTerminal replaces a task whose status is terminal — or a live probe
+// occupant re-driven by its own tick, see isProbeReopen — with the request's own
 // frontmatter and body.
 //
 // ⚠️ It REPLACES rather than merges, and that is the whole reason this is a mode

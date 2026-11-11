@@ -48,7 +48,28 @@ reply 'ok'
 
 const probeIdentifier = "718474b5-d7bd-54b5-8eb7-7a712726a810"
 
-var _ = Describe("Reopening a probe's terminal record", func() {
+// liveProbeRecord is the same lane's record once it has PARKED: it parses, it
+// carries the probe's own identifier, and its status is in_progress — not
+// terminal. This is the shape measured on 2026-11-11 (`probe-service-analysis-
+// agent-dev`, parked at human_review), where every later tick was refused with
+// `title … occupied` and the lane's probe was silently dead.
+const liveProbeRecord = `---
+assignee: sentry-collector-agent
+current_job: ""
+job_started_at: ""
+phase: human_review
+retry_count: 0
+stage: prod
+status: in_progress
+target_vault: openclaw
+task_identifier: 718474b5-d7bd-54b5-8eb7-7a712726a810
+task_type: healthcheck
+trigger_count: 0
+---
+reply 'ok'
+`
+
+var _ = Describe("Reopening a probe's record", func() {
 	const secret = "test-secret"
 
 	var (
@@ -101,6 +122,17 @@ var _ = Describe("Reopening a probe's terminal record", func() {
 		Expect(os.WriteFile(
 			filepath.Join(tasksDir, "probe-sentry-collector-agent-prod.md"),
 			[]byte(probeRecord),
+			0o600,
+		)).To(Succeed())
+		Expect(index.Build(ctx, probeStore())).To(Succeed())
+	}
+
+	// seedLiveProbe writes the same lane's record in its PARKED, non-terminal shape
+	// and rebuilds the index over it.
+	seedLiveProbe := func() {
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "probe-sentry-collector-agent-prod.md"),
+			[]byte(liveProbeRecord),
 			0o600,
 		)).To(Succeed())
 		Expect(index.Build(ctx, probeStore())).To(Succeed())
@@ -162,6 +194,67 @@ var _ = Describe("Reopening a probe's terminal record", func() {
 
 		Expect(recorder.Code).To(Equal(http.StatusConflict))
 		Expect(decode(recorder)["error"]).To(Equal("task_exists"))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("reopens a PARKED probe record that carries the requested identifier", func() {
+		// The park is what kills the lane: the record is non-terminal, so the
+		// terminal-status rule refuses the create, and the paired update-frontmatter
+		// fails with it. Both halves of the tick's write path were refused, and
+		// neither log line read as an error.
+		seedLiveProbe()
+		recorder := call(probeCreate("probe-sentry-collector-agent-prod", probeIdentifier))
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		Expect(decode(recorder)["reopened"]).To(Equal(true))
+		Expect(writer.calls).To(HaveLen(1))
+		Expect(writer.calls[0].path).To(Equal("tasks/probe-sentry-collector-agent-prod.md"))
+		Expect(string(writer.calls[0].content)).To(ContainSubstring("phase: planning"))
+	})
+
+	It("still refuses a parked probe record carrying a DIFFERENT identifier", func() {
+		// The identity guarantee: the reopen is gated on the occupant's own
+		// identifier. A different identifier at the same path is the collision the
+		// terminal-status rule exists to prevent, and it keeps its 409.
+		seedLiveProbe()
+		recorder := call(
+			probeCreate(
+				"probe-sentry-collector-agent-prod",
+				"00000000-0000-5000-8000-000000000000",
+			),
+		)
+
+		Expect(recorder.Code).To(Equal(http.StatusConflict))
+		Expect(decode(recorder)["task_identifier"]).To(Equal(probeIdentifier))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("still refuses a parked probe record when the create carries no identifier", func() {
+		// No identifier is no claim to the record: the occupant could be anyone's.
+		seedLiveProbe()
+		recorder := call(
+			`{"title":"probe-sentry-collector-agent-prod","reopen":"terminal",` +
+				`"frontmatter":{"task_type":"healthcheck","status":"in_progress"}}`,
+		)
+
+		Expect(recorder.Code).To(Equal(http.StatusConflict))
+		Expect(writer.calls).To(BeEmpty())
+	})
+
+	It("still refuses a PARKED non-probe record carrying its own identifier", func() {
+		// The exception is scoped to probe task types. A live pr-review record, or
+		// any other kind, is a genuine occupant and keeps the 409.
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "probe-sentry-collector-agent-prod.md"),
+			[]byte("---\ntask_identifier: "+probeIdentifier+"\nstatus: in_progress\n"+
+				"task_type: pr-review\n---\nbody\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(index.Build(ctx, probeStore())).To(Succeed())
+
+		recorder := call(probeCreate("probe-sentry-collector-agent-prod", probeIdentifier))
+
+		Expect(recorder.Code).To(Equal(http.StatusConflict))
 		Expect(writer.calls).To(BeEmpty())
 	})
 })
