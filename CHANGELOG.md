@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **PATCH accepts a `body` key, so a caller can change frontmatter and body in one commit.** `document` carried only the parsed frontmatter and the subset of changed keys, and `set()` routes everything into frontmatter — so a `"body"` key would have been written as a *frontmatter field literally named body* and left the real body untouched. The controller's planning retry is the motivating caller: it appends a `retry n/3` bullet to the body **and** bumps `planning_retry_count`/`phase`, and the typed client splits those into `PatchTask` (fields) and `PutBody` (body), so the port would have been two non-atomic writes where git-rest did one. Now `body` is lifted out of the request before the field loop, held on the document, and the rendered content is the **original frontmatter block byte-for-byte** plus the new body — passed to the existing `storage.PatchFrontmatter`, so the write stays one commit and still patches only the keys in `changed` (re-serialising the frontmatter would re-render keys this handler never touched). A non-string `body` answers 400 `invalid_body`; an absent `body` leaves the file byte-identical to today's behaviour.
+
 ## v0.22.9
 
 - fix: **every frontmatter key the agent pipeline writes is accepted, so a spawn patch lands whole.** `agentPipelineFields` was still short of the pipeline's own set: the executor's spawn-time `update-frontmatter` clears `last_result_status` in the same patch as `current_job` and `claude_session_id`, and the controller's complete-task and auto-supersede patches send `completed_date`, `processed_at` and `superseded_by`. `fieldRefusal` refuses the whole patch on the first key absent from the allowlist, so the spawn of a probe that ran and completed (`metrics_agent_turns: 1`, `## Result` present) carried no `claude_session_id` at all — measured 2026-11-12T19:28:49Z on `agent-task-controller-personal-0`.

@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -182,14 +183,19 @@ func handleApprove(deps writeDeps) http.HandlerFunc {
 }
 
 // document is one task file loaded for writing: the indexed projection, the raw
-// bytes it was parsed from, the frontmatter map reads go through, and the subset
-// of keys this handler changed. Only `changed` is written back, so every other
-// byte of the frontmatter block survives the write.
+// bytes it was parsed from, the frontmatter map reads go through, the subset of
+// keys this handler changed, and an optional replacement body. Only `changed` is
+// written back, so every other byte of the frontmatter block survives the write.
 type document struct {
 	item        vaultapi.TaskItem
 	raw         []byte
 	frontmatter map[string]any
 	changed     map[string]any
+	// body is a replacement body, nil when the caller did not ask to change it.
+	// It is a pointer so "replace the body with an empty one" stays distinct from
+	// "leave the body alone" — the same distinction PatchFrontmatter makes for
+	// absent versus empty frontmatter values.
+	body *string
 }
 
 // set records a frontmatter change. Reads keep going through frontmatter; the
@@ -198,6 +204,50 @@ type document struct {
 func (d *document) set(key string, value any) {
 	d.frontmatter[key] = value
 	d.changed[key] = value
+}
+
+// setBody records a replacement body. It is a separate verb from set because a
+// body is not a frontmatter key: routing "body" through set would write a
+// frontmatter field literally named body and leave the real body untouched.
+func (d *document) setBody(body string) {
+	d.body = &body
+}
+
+// withBody returns the document's raw bytes with the body replaced, keeping the
+// frontmatter block byte-for-byte. It returns raw unchanged when no replacement
+// was requested.
+//
+// The block is preserved rather than re-serialised on purpose: PatchFrontmatter
+// patches only the keys in `changed`, and rebuilding the frontmatter through a
+// serializer would re-render keys this handler never touched — the property
+// persist's own comment exists to protect.
+func (d document) withBody() []byte {
+	if d.body == nil {
+		return d.raw
+	}
+	head, ok := frontmatterBlock(d.raw)
+	if !ok {
+		// No parseable frontmatter block: leave the bytes alone rather than
+		// guessing where the body starts.
+		return d.raw
+	}
+	return append(append([]byte{}, head...), []byte(*d.body)...)
+}
+
+// frontmatterBlock returns the bytes up to and including the closing `---` line,
+// newline included, so appending a body to them produces a well-formed file.
+func frontmatterBlock(raw []byte) ([]byte, bool) {
+	const fence = "---"
+	lines := bytes.SplitAfter(raw, []byte("\n"))
+	if len(lines) == 0 || strings.TrimSpace(string(lines[0])) != fence {
+		return nil, false
+	}
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(string(lines[i])) == fence {
+			return bytes.Join(lines[:i+1], nil), true
+		}
+	}
+	return nil, false
 }
 
 // loadDocument resolves the id through the index, reads the file, and parses its
@@ -303,7 +353,7 @@ func (d document) write(
 // git-rest and publishes the change event. It answers its own failures and
 // reports whether the caller should go on to write a response.
 func (d document) persist(ctx context.Context, w http.ResponseWriter, deps writeDeps) bool {
-	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(d.raw))
+	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(d.withBody()))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  "render_failed",

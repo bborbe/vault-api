@@ -175,6 +175,43 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls[0].content).To(ContainSubstring("priority: 5"))
 		})
 
+		It("writes the body in the same commit as the fields", func() {
+			// A caller that must move frontmatter and body together — the controller's
+			// planning retry appends a bullet and bumps a counter — gets one write, so
+			// it does not have to split the change across two calls and lose the
+			// atomicity between them.
+			seed("task_identifier: task-1\nstatus: in_progress\npriority: 2\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"priority":5,"body":"- retry 1/3: boom\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1), "fields and body must land in ONE commit")
+			written := writer.calls[0].content
+			Expect(written).To(ContainSubstring("priority: 5"))
+			Expect(written).To(ContainSubstring("- retry 1/3: boom"))
+			// "body" is not a frontmatter key: routing it through set would write a
+			// field literally named body and leave the real body untouched.
+			Expect(written).NotTo(ContainSubstring("body:"))
+		})
+
+		It("leaves the body untouched when the request carries none", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\npriority: 2\n")
+			recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"priority":5}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring("priority: 5"))
+		})
+
+		It("refuses a non-string body rather than writing it into frontmatter", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"body":42}`)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_body"))
+			Expect(writer.calls).To(BeEmpty())
+		})
+
 		It("answers 400 unknown_field rather than writing a key the API does not type", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"secret_sauce":"x"}`)
