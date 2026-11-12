@@ -282,6 +282,23 @@ func handlePatchTask(deps writeDeps) http.HandlerFunc {
 		if !patchTransitions(w, request, document) {
 			return
 		}
+		// "body" is the one key that is not frontmatter: it replaces the file's
+		// body in the same commit as the field changes, so a caller that must move
+		// frontmatter and body together (the controller's planning retry appends a
+		// bullet and bumps a counter) does not have to make two writes and lose the
+		// atomicity between them.
+		if raw, ok := request["body"]; ok {
+			body, isString := raw.(string)
+			if !isString {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":  "invalid_body",
+					"reason": "body must be a string",
+				})
+				return
+			}
+			document.setBody(body)
+			delete(request, "body")
+		}
 		for key, value := range request {
 			document.set(key, value)
 		}
@@ -400,8 +417,17 @@ var patchFields = unionFields(typedTaskFields, agentPipelineFields)
 
 // patchFieldRefusal answers the request itself when a named field may not be
 // written through PATCH, and returns "" when every field is allowed.
+// patchBodyKey is the one request key on PATCH that is not a frontmatter field:
+// it replaces the file's body, in the same commit as the field changes.
+const patchBodyKey = "body"
+
+// patchAcceptedFields is the PATCH allowlist plus the body key. It is separate
+// from patchFields so the body never becomes a writable FRONTMATTER field — the
+// create route and every other consumer keep seeing the fields-only list.
+var patchAcceptedFields = unionFields(patchFields, map[string]bool{patchBodyKey: true})
+
 func patchFieldRefusal(w http.ResponseWriter, request map[string]any, path string) string {
-	return fieldRefusal(w, request, patchFields, path)
+	return fieldRefusal(w, request, patchAcceptedFields, path)
 }
 
 // createFields is the PATCH allowlist plus task_identifier, which only a create
