@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **a task patch carrying `claude_session_id` is accepted, so a spawn's `current_job` lands with it.** `agentPipelineFields` is a closed allowlist and `fieldRefusal` refuses the whole patch on the first key absent from it. The controller's spawn-time `update-frontmatter` sends `claude_session_id` and `current_job` in one patch, so the refusal on the session key dropped `current_job` with it — and the task file kept neither field. Measured 2026-11-12 on dev: 22 refusals on `agent-task-controller-personal-0`, every one naming `claude_session_id` and none naming `current_job`, which is what a whole-patch refusal looks like from the log. The key is added beside the other spawn fields; the drift control is unchanged — a key in neither set is still refused wholesale with `400 unknown_field`.
+
 ## v0.22.7
 
 - fix: **a probe record that parks non-terminal is re-driven by its next tick instead of refused.** `handleCreateTask` refuses any create whose title path is held by a non-terminal occupant — correct for two attempts sharing an identity, wrong for a probe, which is re-issued on every tick with the *same* identifier. A probe record that parked (`phase: human_review`, `status: in_progress`) therefore answered `409 title … occupied` forever, and the tick's paired `update-frontmatter` failed with it, so both halves of the write path were refused while the lane went on reporting healthy. Measured 2026-11-11: `probe-service-analysis-agent-dev` (`791b703e-…`) parked, every later tick refused at `15:06:35Z`. A non-terminal occupant whose `task_type` is `healthcheck` **and** whose `task_identifier` equals the one the request carries is now reopened in place, exactly as a terminal occupant already was. The identity guarantee is the identifier test: a different identifier at the same path still answers 409, a create carrying no identifier still answers 409, and a live occupant of any other `task_type` is untouched. The recurring-task carve-out is unchanged — it lives in the controller and is keyed on terminal status.
