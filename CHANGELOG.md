@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.8
 
 - fix: **a task patch carrying `claude_session_id` is accepted, so a spawn's `current_job` lands with it.** `agentPipelineFields` is a closed allowlist and `fieldRefusal` refuses the whole patch on the first key absent from it. The controller's spawn-time `update-frontmatter` sends `claude_session_id` and `current_job` in one patch, so the refusal on the session key dropped `current_job` with it — and the task file kept neither field. Measured 2026-11-12 on dev: 22 refusals on `agent-task-controller-personal-0`, every one naming `claude_session_id` and none naming `current_job`, which is what a whole-patch refusal looks like from the log. The key is added beside the other spawn fields; the drift control is unchanged — a key in neither set is still refused wholesale with `400 unknown_field`.
 
