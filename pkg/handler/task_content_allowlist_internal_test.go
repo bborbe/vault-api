@@ -6,7 +6,9 @@ package handler
 
 import (
 	"sort"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // controllerEmittedFrontmatterKeys is every frontmatter key agent-task-controller
@@ -14,12 +16,9 @@ import (
 // from their source rather than from a log.
 //
 // ⚠️ This list, not the log, is the input. `fieldRefusal` names ONE refused key
-// per attempt and Go map iteration is random, so an outage that refuses six keys
-// reports a different one on every retry: measured 2026-11-12, the dev
-// controllers logged only `claude_session_id` (71×) and `last_result_status`
-// (9×) while `completed_date`, `processed_at` and `superseded_by` were equally
-// absent from the allowlist and simply had not fired yet. Widening by the field
-// a log line names fixes one sixth of the class and ships the next outage late.
+// per attempt and Go map iteration is random, so an outage that refuses several
+// keys reports a different one on every retry. Widening by the field a log line
+// names fixes a fraction of the class and ships the next outage late.
 //
 // The enumeration, by producer:
 //
@@ -47,9 +46,10 @@ import (
 //	                                        assignee, target_vault, current_job,
 //	                                        status, phase
 //
-// A producer that starts writing a new key must add it here; the assertion below
-// then fails until the key is admitted, so the omission surfaces at build time
-// rather than as a 400 that drops the whole patch at runtime.
+// The guarantee is one-way: a key added to this list or to agentPipelineFields
+// without the other fails the build. A producer that starts writing a NEW key
+// cannot be detected from here — it lives in another repo — so transcribing it
+// into this list stays a hand step, taken from the producer's source.
 var controllerEmittedFrontmatterKeys = []string{
 	"aborted_reason",
 	"assignee",
@@ -76,60 +76,11 @@ var controllerEmittedFrontmatterKeys = []string{
 	"trigger_scope",
 }
 
-// TestControllerEmittedKeysAreWritable pins the PATCH allowlist against the
-// enumeration above: a key a producer emits but patchFields omits is exactly the
-// 400 unknown_field that drops an entire patch, and this test fails the build
-// instead.
-func TestControllerEmittedKeysAreWritable(t *testing.T) {
-	seen := make(map[string]bool, len(controllerEmittedFrontmatterKeys))
-	for _, key := range controllerEmittedFrontmatterKeys {
-		if seen[key] {
-			t.Fatalf("key %q is listed twice in controllerEmittedFrontmatterKeys", key)
-		}
-		seen[key] = true
-		if !patchFields[key] {
-			t.Errorf(
-				"the controller/executor write %q but patchFields refuses it: "+
-					"every patch carrying it answers 400 unknown_field and is dropped whole",
-				key,
-			)
-		}
-	}
-}
-
-// TestAgentPipelineFieldsAreAttributed asserts the converse: every key the
-// pipeline-only allowlist admits is attributed to a known producer, so the set
-// cannot grow by an unattributed entry that no enumeration would catch.
-func TestAgentPipelineFieldsAreAttributed(t *testing.T) {
-	attributed := make(map[string]bool, len(controllerEmittedFrontmatterKeys))
-	for _, key := range controllerEmittedFrontmatterKeys {
-		attributed[key] = true
-	}
-	for key := range otherProducerFields {
-		attributed[key] = true
-	}
-	keys := make([]string, 0, len(agentPipelineFields))
-	for key := range agentPipelineFields {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if attributed[key] {
-			continue
-		}
-		t.Errorf(
-			"agentPipelineFields admits %q but records no producer for it: "+
-				"add it to controllerEmittedFrontmatterKeys or otherProducerFields",
-			key,
-		)
-	}
-}
-
 // otherProducerFields are the allowlist's remaining entries, written by the
 // watchers, the recurring templates and the pr-override agent rather than by the
-// controller/executor. They are recorded here only so the attribution assertion
-// can account for every key; their own pinning test lives in the external
-// package (task_content_test.go), which exercises each one through a real PATCH.
+// controller/executor. They are recorded here so the attribution assertion can
+// account for every key; their own pinning test lives in the external package
+// (task_content_test.go), which exercises each one through a real PATCH.
 var otherProducerFields = map[string]bool{
 	"auto_abort_prior":  true, // recurring-task-creator's supersede flag
 	"base_ref":          true, // github-pr-watcher
@@ -157,3 +108,49 @@ var otherProducerFields = map[string]bool{
 	"vuln_count":        true, // github-vuln-watcher
 	"vulns":             true, // github-vuln-watcher
 }
+
+var _ = Describe("agent pipeline frontmatter allowlist", func() {
+	It("admits every key the controller and executor emit", func() {
+		seen := map[string]bool{}
+		for _, key := range controllerEmittedFrontmatterKeys {
+			Expect(seen).NotTo(HaveKey(key), "listed twice: %s", key)
+			seen[key] = true
+			Expect(patchFields).To(
+				HaveKey(key),
+				"the controller/executor write %q but patchFields refuses it: "+
+					"every patch carrying it answers 400 unknown_field and is dropped whole",
+				key,
+			)
+		}
+	})
+
+	It("records a producer for every pipeline-only key", func() {
+		attributed := map[string]bool{}
+		for _, key := range controllerEmittedFrontmatterKeys {
+			attributed[key] = true
+		}
+		for key := range otherProducerFields {
+			attributed[key] = true
+			// A key attributed only here must still be writable: otherwise the
+			// attribution silences the check above while the key answers 400.
+			Expect(patchFields).To(
+				HaveKey(key),
+				"otherProducerFields records %q but patchFields refuses it",
+				key,
+			)
+		}
+		keys := make([]string, 0, len(agentPipelineFields))
+		for key := range agentPipelineFields {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			Expect(attributed).To(
+				HaveKey(key),
+				"agentPipelineFields admits %q but records no producer for it: "+
+					"add it to controllerEmittedFrontmatterKeys or otherProducerFields",
+				key,
+			)
+		}
+	})
+})

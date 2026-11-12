@@ -122,9 +122,10 @@ var typedTaskFields = map[string]bool{
 // Every entry is measured rather than guessed — each is written today by
 // agent-task-executor or agent-task-controller on a path that reaches PatchTask.
 // The pipeline's entries are enumerated from those producers' source in
-// task_content_allowlist_internal_test.go, which asserts this map covers them;
-// adding a key to one side without the other fails the build rather than the
-// write.
+// task_content_allowlist_internal_test.go, which asserts the patch allowlist
+// covers them; a key added to one side without the other fails the build. A
+// producer that starts writing a new key is still transcribed there by hand,
+// because it lives in another repository.
 var agentPipelineFields = map[string]bool{
 	"trigger_scope":      true, // PublishSetTriggerScope
 	"trigger_count":      true, // PublishSetTriggerScope, IncrementFrontmatterCommand
