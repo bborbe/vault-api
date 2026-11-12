@@ -214,40 +214,55 @@ func (d *document) setBody(body string) {
 }
 
 // withBody returns the document's raw bytes with the body replaced, keeping the
-// frontmatter block byte-for-byte. It returns raw unchanged when no replacement
-// was requested.
+// frontmatter block byte-for-byte, and reports false when a replacement was
+// requested but the file has no frontmatter block to anchor it to.
 //
 // The block is preserved rather than re-serialised on purpose: PatchFrontmatter
 // patches only the keys in `changed`, and rebuilding the frontmatter through a
 // serializer would re-render keys this handler never touched — the property
 // persist's own comment exists to protect.
-func (d document) withBody() []byte {
+func (d document) withBody() ([]byte, bool) {
 	if d.body == nil {
-		return d.raw
+		return d.raw, true
 	}
 	head, ok := frontmatterBlock(d.raw)
 	if !ok {
-		// No parseable frontmatter block: leave the bytes alone rather than
-		// guessing where the body starts.
-		return d.raw
+		// No parseable frontmatter block. Answering 200 here would be a silent
+		// no-op: the caller asked to replace the body and nothing changed.
+		return nil, false
 	}
-	return append(append([]byte{}, head...), []byte(*d.body)...)
+	return append(append([]byte{}, head...), []byte(*d.body)...), true
 }
 
 // frontmatterBlock returns the bytes up to and including the closing `---` line,
 // newline included, so appending a body to them produces a well-formed file.
+//
+// The fence must sit at column 0. A `---` indented inside a YAML block scalar is
+// part of a frontmatter VALUE, not the closing fence, and matching it would
+// splice the new body into the middle of the frontmatter block.
 func frontmatterBlock(raw []byte) ([]byte, bool) {
 	const fence = "---"
 	lines := bytes.SplitAfter(raw, []byte("\n"))
-	if len(lines) == 0 || strings.TrimSpace(string(lines[0])) != fence {
+	if len(lines) == 0 || fenceLine(lines[0]) != fence {
 		return nil, false
 	}
 	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(string(lines[i])) == fence {
+		if fenceLine(lines[i]) == fence {
 			return bytes.Join(lines[:i+1], nil), true
 		}
 	}
 	return nil, false
+}
+
+// fenceLine returns the line without its trailing newline, or "" when the line
+// is indented — an indented `---` is content, never a fence.
+func fenceLine(line []byte) string {
+	trimmed := strings.TrimSuffix(string(line), "\n")
+	trimmed = strings.TrimSuffix(trimmed, "\r")
+	if trimmed != strings.TrimSpace(trimmed) {
+		return ""
+	}
+	return trimmed
 }
 
 // loadDocument resolves the id through the index, reads the file, and parses its
@@ -352,8 +367,17 @@ func (d document) write(
 // persist renders the changed keys into the original bytes, hands the file to
 // git-rest and publishes the change event. It answers its own failures and
 // reports whether the caller should go on to write a response.
-func (d document) persist(ctx context.Context, w http.ResponseWriter, deps writeDeps) bool {
-	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(d.withBody()))
+func (d *document) persist(ctx context.Context, w http.ResponseWriter, deps writeDeps) bool {
+	content, bodyOK := d.withBody()
+	if !bodyOK {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error":  "invalid_document",
+			"reason": "no frontmatter block to anchor a replacement body to",
+			"path":   d.item.Path,
+		})
+		return false
+	}
+	rendered, err := storage.PatchFrontmatter(ctx, d.changed, string(content))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  "render_failed",
@@ -370,6 +394,10 @@ func (d document) persist(ctx context.Context, w http.ResponseWriter, deps write
 		})
 		return false
 	}
+	// The bytes just written are the document's new truth: the response view and
+	// the change event both read raw, so leaving the pre-write copy here would
+	// answer a body PATCH with the body it replaced.
+	d.raw = []byte(rendered)
 	// The file has landed in git, so the response is already decided: a publish
 	// failure must not turn a write that happened into an error the client retries,
 	// because that retry would be refused as an already-applied transition.

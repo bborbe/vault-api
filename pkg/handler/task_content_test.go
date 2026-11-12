@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	libtime "github.com/bborbe/time"
@@ -202,6 +203,41 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(recorder.Code).To(Equal(http.StatusOK))
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].content).To(ContainSubstring("priority: 5"))
+		})
+
+		It("answers the body it just wrote, not the one it replaced", func() {
+			// The response view and the change event both read the document's raw
+			// bytes, so a stale copy there answers a body PATCH with the old body and
+			// publishes the old body — the write happened, the caller is told otherwise.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"priority":5,"body":"- retry 1/3: boom\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["body"]).To(ContainSubstring("- retry 1/3: boom"))
+		})
+
+		It("does not treat an indented --- inside a block scalar as the closing fence", func() {
+			// A `---` indented inside a YAML block scalar is part of a frontmatter
+			// VALUE. Matching it would splice the new body into the middle of the
+			// frontmatter block and corrupt the file.
+			seed("task_identifier: task-1\nstatus: in_progress\nnote: |\n  ---\n  keep me\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"priority":5,"body":"fresh body\n"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			written := writer.calls[0].content
+			Expect(written).To(ContainSubstring("keep me"))
+			Expect(written).To(ContainSubstring("fresh body"))
+			// The body must land AFTER the real closing fence, so "keep me" — which is
+			// frontmatter — stays above it and the new body below.
+			Expect(
+				strings.Index(written, "keep me"),
+			).To(BeNumerically("<", strings.Index(written, "fresh body")))
 		})
 
 		It("refuses a non-string body rather than writing it into frontmatter", func() {
