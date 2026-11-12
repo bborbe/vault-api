@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **every frontmatter key the agent pipeline writes is accepted, so a spawn patch lands whole.** `agentPipelineFields` was still short of the pipeline's own set: the executor's spawn-time `update-frontmatter` clears `last_result_status` in the same patch as `current_job` and `claude_session_id`, and the controller's complete-task and auto-supersede patches send `completed_date`, `processed_at` and `superseded_by`. `fieldRefusal` refuses the whole patch on the first key absent from the allowlist, so the spawn of a probe that ran and completed (`metrics_agent_turns: 1`, `## Result` present) carried no `claude_session_id` at all — measured 2026-11-12T19:28:49Z on `agent-task-controller-personal-0`, task `f28ae749`.
+  ⚠️ **The log undercounted the set, as it always does.** In the same 48-hour window the dev controllers logged only `claude_session_id` (71×) and `last_result_status` (9×), while `completed_date`, `processed_at` and `superseded_by` were equally absent and had simply not fired — no complete-task or supersede command had run. `fieldRefusal` names one key per attempt and Go map iteration is random, so a log samples this set but cannot enumerate it; this widening came from the producers' source instead, and `task_content_allowlist_internal_test.go` now asserts every controller/executor-emitted key is writable and every pipeline-only key has a recorded producer, so the next omission fails the build rather than the write.
+
 ## v0.22.8
 
 - fix: **a task patch carrying `claude_session_id` is accepted, so a spawn's `current_job` lands with it.** `agentPipelineFields` is a closed allowlist and `fieldRefusal` refuses the whole patch on the first key absent from it. The controller's spawn-time `update-frontmatter` sends `claude_session_id` and `current_job` in one patch, so the refusal on the session key dropped `current_job` with it — and the task file kept neither field. Measured 2026-11-12 on dev: 22 refusals on `agent-task-controller-personal-0`, every one naming `claude_session_id` and none naming `current_job`, which is what a whole-patch refusal looks like from the log. The key is added beside the other spawn fields; the drift control is unchanged — a key in neither set is still refused wholesale with `400 unknown_field`.
