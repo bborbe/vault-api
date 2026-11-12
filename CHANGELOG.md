@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.22.9
 
 - fix: **every frontmatter key the agent pipeline writes is accepted, so a spawn patch lands whole.** `agentPipelineFields` was still short of the pipeline's own set: the executor's spawn-time `update-frontmatter` clears `last_result_status` in the same patch as `current_job` and `claude_session_id`, and the controller's complete-task and auto-supersede patches send `completed_date`, `processed_at` and `superseded_by`. `fieldRefusal` refuses the whole patch on the first key absent from the allowlist, so the spawn of a probe that ran and completed (`metrics_agent_turns: 1`, `## Result` present) carried no `claude_session_id` at all — measured 2026-11-12T19:28:49Z on `agent-task-controller-personal-0`.
   ⚠️ **The log undercounted the set, as it always does.** In the same 48-hour window the dev controllers logged only `claude_session_id` (71×) and `last_result_status` (9×), while `completed_date`, `processed_at` and `superseded_by` were equally absent and had simply not fired — no complete-task or supersede command had run. `fieldRefusal` names one key per attempt and Go map iteration is random, so a log samples this set but cannot enumerate it; this widening came from the producers' source instead. `task_content_allowlist_internal_test.go` asserts every controller/executor-emitted key is writable and every pipeline-only key has a recorded producer, so a key added to one list without the other fails the build; a producer that starts writing a new key is still transcribed there by hand.
