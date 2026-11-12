@@ -248,7 +248,15 @@ func frontmatterBlock(raw []byte) ([]byte, bool) {
 	}
 	for i := 1; i < len(lines); i++ {
 		if fenceLine(lines[i]) == fence {
-			return bytes.Join(lines[:i+1], nil), true
+			head := bytes.Join(lines[:i+1], nil)
+			// A file whose closing fence is its last byte has no trailing newline;
+			// appending a body to that would produce `---<body>` on one line and a
+			// malformed document. The fence line always ends in a newline in the
+			// output.
+			if !bytes.HasSuffix(head, []byte("\n")) {
+				head = append(head, '\n')
+			}
+			return head, true
 		}
 	}
 	return nil, false

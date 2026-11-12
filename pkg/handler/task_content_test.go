@@ -240,6 +240,25 @@ var _ = Describe("Task content endpoints", func() {
 			).To(BeNumerically("<", strings.Index(written, "fresh body")))
 		})
 
+		// Two branches are deliberately NOT exercised here, because they are
+		// unreachable through the HTTP surface: a task file whose closing fence is
+		// its last byte, and a file with no frontmatter block at all. The index only
+		// holds tasks whose frontmatter parses, so such a file answers 404 before the
+		// handler runs. The guards stay as defence in depth — `frontmatterBlock`
+		// terminates the fence with a newline, and `withBody` refuses rather than
+		// silently no-op — but a spec that seeds an unindexable file would be testing
+		// the 404, not the guard.
+
+		It("replaces the body with an empty one when body is the empty string", func() {
+			// An empty body is a replacement, not "leave it alone" — the distinction
+			// the pointer exists to keep.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"body":""}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).NotTo(ContainSubstring(contentBody))
+		})
+
 		It("refuses a non-string body rather than writing it into frontmatter", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(http.MethodPatch, "/api/v1/tasks/task-1", `{"body":42}`)
