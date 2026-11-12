@@ -126,6 +126,7 @@ var agentPipelineFields = map[string]bool{
 	"trigger_count":      true, // PublishSetTriggerScope, IncrementFrontmatterCommand
 	"max_triggers":       true, // the operator's cap definition, armed on the crash class
 	"current_job":        true, // PublishSpawnNotification, cleared by PublishClearCurrentJob
+	"claude_session_id":  true, // the spawn's session anchor, written in the same update-frontmatter patch
 	"job_started_at":     true, // PublishSpawnNotification
 	"spawn_notification": true, // PublishSpawnNotification
 	"queued_at":          true, // PublishQueueEntry

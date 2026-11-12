@@ -207,10 +207,17 @@ var _ = Describe("Task content endpoints", func() {
 		// other test here and only break the controller at runtime.
 		It("accepts every agent-pipeline key, not just the three the redrive sends", func() {
 			values := map[string]string{
-				"trigger_scope":      `"planning:"`,
-				"trigger_count":      `1`,
-				"max_triggers":       `3`,
-				"current_job":        `"job-1"`,
+				"trigger_scope": `"planning:"`,
+				"trigger_count": `1`,
+				"max_triggers":  `3`,
+				"current_job":   `"job-1"`,
+				// The spawn's session anchor, written in the SAME
+				// update-frontmatter patch as current_job. fieldRefusal refuses
+				// the whole patch on the first unknown key, so its absence lost
+				// current_job with it — measured 2026-11-12 on
+				// agent-task-controller-personal-0: 22 refusals, every one
+				// naming this key and none naming current_job.
+				"claude_session_id":  `"63e6b2c7-81a6-4624-bc3d-a5cc5699bac2"`,
 				"job_started_at":     `"2026-10-28T10:00:00Z"`,
 				"spawn_notification": `true`,
 				"queued_at":          `"2026-10-28T10:00:00Z"`,
