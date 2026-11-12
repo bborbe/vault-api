@@ -121,6 +121,11 @@ var typedTaskFields = map[string]bool{
 //
 // Every entry is measured rather than guessed — each is written today by
 // agent-task-executor or agent-task-controller on a path that reaches PatchTask.
+// The pipeline's entries are enumerated from those producers' source in
+// task_content_allowlist_internal_test.go, which asserts the patch allowlist
+// covers them; a key added to one side without the other fails the build. A
+// producer that starts writing a new key is still transcribed there by hand,
+// because it lives in another repository.
 var agentPipelineFields = map[string]bool{
 	"trigger_scope":      true, // PublishSetTriggerScope
 	"trigger_count":      true, // PublishSetTriggerScope, IncrementFrontmatterCommand
@@ -135,6 +140,27 @@ var agentPipelineFields = map[string]bool{
 	"target_vault":       true, // the controller's routing field, healed on write
 	"previous_assignee":  true, // trigger-cap escalation
 	"retry_count":        true, // the probe path's spawn-time bump, reset to 0 on reuse
+
+	// The run's outcome, cleared at spawn by PublishSpawnNotification so the park
+	// gate reads THIS run rather than the last one that delivered. It rides the
+	// same update-frontmatter patch as current_job and claude_session_id, and
+	// fieldRefusal refuses the whole patch on the first unknown key — measured
+	// 2026-11-12 on agent-task-controller-personal-0: the spawn of task
+	// f28ae749 wrote `unknown_field: last_result_status` and lost current_job and
+	// claude_session_id with it, which is why a probe that ran and completed
+	// carried no session anchor at all.
+	"last_result_status": true, // PublishSpawnNotification clears it; the agent delivery stamps it
+
+	// The complete-task and auto-supersede patches, both of which reach PatchTask
+	// from agent-task-controller. They were in neither allowlist, so no
+	// complete-task or supersede command could ever have succeeded:
+	// buildCompletePatch sends completed_date and processed_at unconditionally,
+	// and transitionPriorTyped sends superseded_by on every supersede. Neither
+	// path had fired on dev in the 48 hours this was measured, which is why a log
+	// sample could not find them — the outage was latent, not silent.
+	"completed_date": true, // buildCompletePatch, transitionPriorTyped
+	"processed_at":   true, // buildCompletePatch
+	"superseded_by":  true, // transitionPriorTyped (auto-supersede)
 
 	// Written by github-pr-watcher into every task it creates, and by the
 	// release watcher into every release task, so they arrive on the CREATE path

@@ -226,6 +226,21 @@ var _ = Describe("Task content endpoints", func() {
 				"target_vault":       `"personal"`,
 				"previous_assignee":  `"bborbe"`,
 				"retry_count":        `0`,
+				// The run's outcome, cleared at spawn in the SAME
+				// update-frontmatter patch as current_job and
+				// claude_session_id. Its absence refused that patch whole —
+				// measured 2026-11-12 on agent-task-controller-personal-0, where
+				// a probe that ran and completed carried no session anchor at
+				// all because this one key 400'd the write.
+				"last_result_status": `""`,
+				// The complete-task and auto-supersede patches. Both reach
+				// PatchTask from the controller and neither key was in any
+				// allowlist, so no complete-task or supersede command could have
+				// succeeded; neither path had fired on dev yet, which is why no
+				// log line named them.
+				"completed_date": `"2026-11-12T19:00:00Z"`,
+				"processed_at":   `"2026-11-12T19:00:00Z"`,
+				"superseded_by":  `"25 Tasks/Some Successor.md"`,
 				// Written by github-pr-watcher / the release watcher on the
 				// CREATE path, not by the executor/controller. Their absence
 				// refused every create outright (400 unknown_field, 2026-10-28),
