@@ -909,5 +909,63 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(decode(recorder)["error"]).To(Equal("invalid_task_identifier"))
 			Expect(writer.calls).To(BeEmpty())
 		})
+
+		It("records an optional previous identifier in the same write", func() {
+			// The scanner's repair mints a new identifier for a file whose old one
+			// was invalid, and a result already in flight under the old address must
+			// still reach the file. One write, not two: a separate PATCH would leave
+			// a window where neither address resolves.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-2","previous":"legacy-id"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode(recorder)["id"]).To(Equal("task-2"))
+
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
+			Expect(writer.calls[0].content).To(ContainSubstring("task-2"))
+			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier_previous: legacy-id"))
+		})
+
+		It("omits previous entirely when the request does not name one", func() {
+			// The additive contract: an existing caller sending only
+			// task_identifier must get exactly today's file, with no new key.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-2"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).NotTo(ContainSubstring("task_identifier_previous"))
+		})
+
+		It("records previous even when the identifier half is already applied", func() {
+			// A caller re-sending the whole move must not lose the in-flight
+			// identity just because the identifier already landed.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-1","previous":"legacy-id"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier_previous: legacy-id"))
+		})
+
+		It("ignores a previous equal to the new address", func() {
+			// Recording it would tell a later resolver the task used to answer to
+			// the name it now carries.
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPost, "/api/v1/tasks/Alpha/readdress",
+				`{"task_identifier":"task-2","previous":"task-2"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).NotTo(ContainSubstring("task_identifier_previous"))
+		})
 	})
 })
