@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.24.0
 
 - feat: **`POST /api/v1/tasks/{id}/readdress` accepts an optional `previous` field, so a repaired identifier still answers to the address it replaced.** The controller's scanner mints a fresh `task_identifier` for a file whose old one was missing or invalid, and writes the replaced value as `task_identifier_previous` in the same frontmatter edit; `result.FindTaskFilePath` matches on either key, so a result already in flight under the old address still reaches the file rather than resolving to nothing. The typed route could not express that half — `task_identifier_previous` is in neither `typedTaskFields` nor `agentPipelineFields`, and `PATCH` refuses it — so porting the scanner onto the typed surface would have silently dropped the mechanism behind `bborbe/agent-task-controller#127` on the one stage where the repair runs (`AUTO_INJECT_TASK_IDENTIFIER` is `false` on dev, `true` on prod). **Additive and optional:** a request that omits `previous` produces exactly today's file, `previous` equal to the new address is ignored, and a re-send of an already-applied move still records it so a retry cannot lose the in-flight identity. Both keys land in one patch, so there is no window where neither address resolves.
 
