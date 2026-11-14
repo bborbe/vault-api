@@ -310,8 +310,16 @@ func handlePatchTask(deps writeDeps) http.HandlerFunc {
 }
 
 // readdressRequest is the body of POST /api/v1/tasks/{id}/readdress.
+//
+// Previous is optional and additive: a request that omits it behaves exactly as
+// this route always has. When supplied it is recorded as the file's
+// task_identifier_previous in the SAME write as the new identifier, so a result
+// already in flight under the replaced address still resolves to this file. The
+// scanner's identifier repair needs that pairing — writing the two in separate
+// requests would leave a window where neither address resolves.
 type readdressRequest struct {
 	TaskIdentifier string `json:"task_identifier"`
+	Previous       string `json:"previous,omitempty"`
 }
 
 // handleReaddressTask serves POST /api/v1/tasks/{id}/readdress: the task's
@@ -343,6 +351,12 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			})
 			return
 		}
+		previous := strings.TrimSpace(request.Previous)
+		// A "previous" equal to the new address records nothing: it would tell a
+		// later resolver that the task used to answer to the name it now carries.
+		if previous == next {
+			previous = ""
+		}
 		document, ok := loadDocument(ctx, w, deps, mux.Vars(r)["id"])
 		if !ok {
 			return
@@ -351,6 +365,19 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			// Already addressed that way: a retry of the same move is a no-op, not
 			// a collision with itself. Answering 409 here would make the verb
 			// non-idempotent for a caller that re-sends it.
+			//
+			// `previous` is still applied, because a caller re-sending the whole
+			// move must not lose the in-flight identity just because the
+			// identifier half already landed. With no previous there is nothing
+			// to write, so the no-op stays a no-op.
+			if previous == "" {
+				writeJSON(w, http.StatusOK, document.view())
+				return
+			}
+			document.set("task_identifier_previous", previous)
+			if !document.persist(ctx, w, deps) {
+				return
+			}
 			writeJSON(w, http.StatusOK, document.view())
 			return
 		}
@@ -370,6 +397,11 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			return
 		}
 		document.set("task_identifier", next)
+		// Recorded in the same patch as the identifier, so the move and the
+		// in-flight address are one commit rather than two.
+		if previous != "" {
+			document.set("task_identifier_previous", previous)
+		}
 		// Set before persist, not after: persist publishes the change event, and
 		// that event's TaskIdentifier is read from the item. Assigning afterwards
 		// emits a re-address announcement carrying the OLD address, which is the
