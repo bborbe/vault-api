@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
+	libtime "github.com/bborbe/time"
 	"github.com/bborbe/vault-cli/pkg/domain"
+	pageindex "github.com/bborbe/vault-cli/pkg/index"
 	"github.com/bborbe/vault-cli/pkg/storage"
 	"github.com/golang/glog"
 )
@@ -165,12 +167,13 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	// build's snapshot would then overwrite that create's upsert with a view of the
 	// tree that predates it, re-opening the 404 the upsert exists to close.
 	generation := i.currentGeneration()
-	tasks, taskInvalid, taskWarnings, taskByID, sets, err := i.buildTasks(ctx, store)
+	pages := newBuildPageIndex(store)
+	tasks, taskInvalid, taskWarnings, taskByID, sets, err := i.buildTasks(ctx, pages)
 	if err != nil {
 		i.markUnbuilt()
 		return err
 	}
-	goals, goalInvalid, goalWarnings, goalByID, err := i.buildGoals(ctx, store)
+	goals, goalInvalid, goalWarnings, goalByID, err := i.buildGoals(ctx, pages)
 	if err != nil {
 		i.markUnbuilt()
 		return err
@@ -293,25 +296,25 @@ func openTasksByState(tasks []TaskItem) map[OpenTaskKey]int {
 
 func (i *Index) buildTasks(
 	ctx context.Context,
-	store storage.PageStorage,
+	pages pageindex.PageIndex,
 ) ([]TaskItem, map[string]string, int, map[string]int, taskSets, error) {
 	dir := filepath.Join(i.cfg.VaultPath, i.cfg.TasksDir)
 	files, err := listMarkdownFiles(dir)
 	if err != nil {
 		return nil, nil, 0, nil, taskSets{}, err
 	}
-	pages, err := store.ListPages(ctx, i.cfg.VaultPath, i.cfg.TasksDir)
+	listed, err := pages.ListPages(ctx, i.cfg.VaultPath, i.cfg.TasksDir)
 	if err != nil {
 		return nil, nil, 0, nil, taskSets{}, err
 	}
 
-	tasks := make([]TaskItem, 0, len(pages))
+	tasks := make([]TaskItem, 0, len(listed))
 	invalid := make(map[string]string)
-	byID := make(map[string]int, len(pages))
+	byID := make(map[string]int, len(listed))
 	sets := newTaskSets()
 
-	readable := make(map[string]struct{}, len(pages))
-	for _, page := range pages {
+	readable := make(map[string]struct{}, len(listed))
+	for _, page := range listed {
 		readable[page.Name] = struct{}{}
 	}
 	warnings := 0
@@ -324,7 +327,7 @@ func (i *Index) buildTasks(
 		invalid[name] = "unparseable frontmatter"
 	}
 
-	for _, page := range pages {
+	for _, page := range listed {
 		item, reason, ok := i.taskItem(page)
 		if !ok {
 			warnings++
@@ -517,24 +520,24 @@ func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
 
 func (i *Index) buildGoals(
 	ctx context.Context,
-	store storage.PageStorage,
+	pages pageindex.PageIndex,
 ) ([]GoalItem, map[string]string, int, map[string]int, error) {
 	dir := filepath.Join(i.cfg.VaultPath, i.cfg.GoalsDir)
 	files, err := listMarkdownFiles(dir)
 	if err != nil {
 		return nil, nil, 0, nil, err
 	}
-	pages, err := store.ListPages(ctx, i.cfg.VaultPath, i.cfg.GoalsDir)
+	listed, err := pages.ListPages(ctx, i.cfg.VaultPath, i.cfg.GoalsDir)
 	if err != nil {
 		return nil, nil, 0, nil, err
 	}
 
-	goals := make([]GoalItem, 0, len(pages))
+	goals := make([]GoalItem, 0, len(listed))
 	invalid := make(map[string]string)
-	byID := make(map[string]int, len(pages))
+	byID := make(map[string]int, len(listed))
 
-	readable := make(map[string]struct{}, len(pages))
-	for _, page := range pages {
+	readable := make(map[string]struct{}, len(listed))
+	for _, page := range listed {
 		readable[page.Name] = struct{}{}
 	}
 	warnings := 0
@@ -547,7 +550,7 @@ func (i *Index) buildGoals(
 		invalid[name] = "unparseable frontmatter"
 	}
 
-	for _, page := range pages {
+	for _, page := range listed {
 		slug := slugify(page.Name)
 		rawStatus := page.GetString("status")
 		if rawStatus != "" {
@@ -822,4 +825,20 @@ func optionalString(value string) *string {
 
 func goalKey(value string) string {
 	return strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "[]"))
+}
+
+// newBuildPageIndex returns a fresh vault-cli metadata page index over store.
+// Each Build gets its own, so a rebuild always reads the tree as it is now and
+// carries no snapshot over from an earlier one; per-request body reads keep
+// going through store's ReadPage, never through this index.
+func newBuildPageIndex(store storage.PageStorage) pageindex.PageIndex {
+	idx := pageindex.NewPageIndex(
+		pageindex.NewPageReader(store),
+		pageindex.NewDirectoryLister(),
+		libtime.NewCurrentDateTime(),
+		libtime.NewWaiterDuration(),
+		nil,
+	)
+	pageindex.SetWarnf(idx, glog.Warningf)
+	return idx
 }

@@ -926,7 +926,9 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
 			Expect(writer.calls[0].content).To(ContainSubstring("task-2"))
-			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier_previous: legacy-id"))
+			Expect(
+				writer.calls[0].content,
+			).To(ContainSubstring("task_identifier_previous: legacy-id"))
 		})
 
 		It("omits previous entirely when the request does not name one", func() {
@@ -952,7 +954,9 @@ var _ = Describe("Task content endpoints", func() {
 			)
 			Expect(recorder.Code).To(Equal(http.StatusOK))
 			Expect(writer.calls).To(HaveLen(1))
-			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier_previous: legacy-id"))
+			Expect(
+				writer.calls[0].content,
+			).To(ContainSubstring("task_identifier_previous: legacy-id"))
 		})
 
 		It("ignores a previous equal to the new address", func() {
