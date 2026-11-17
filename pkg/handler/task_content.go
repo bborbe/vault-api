@@ -309,6 +309,26 @@ func handlePatchTask(deps writeDeps) http.HandlerFunc {
 	}
 }
 
+// readdressRetry answers a readdress whose target the task already carries. With
+// no previous there is nothing to write; otherwise previous is recorded alone.
+func readdressRetry(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps writeDeps,
+	document *document,
+	previous string,
+) {
+	if previous == "" {
+		writeJSON(w, http.StatusOK, document.view())
+		return
+	}
+	document.set("task_identifier_previous", previous)
+	if !document.persist(ctx, w, deps) {
+		return
+	}
+	writeJSON(w, http.StatusOK, document.view())
+}
+
 // readdressRequest is the body of POST /api/v1/tasks/{id}/readdress.
 //
 // Previous is optional and additive: a request that omits it behaves exactly as
@@ -370,15 +390,7 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			// move must not lose the in-flight identity just because the
 			// identifier half already landed. With no previous there is nothing
 			// to write, so the no-op stays a no-op.
-			if previous == "" {
-				writeJSON(w, http.StatusOK, document.view())
-				return
-			}
-			document.set("task_identifier_previous", previous)
-			if !document.persist(ctx, w, deps) {
-				return
-			}
-			writeJSON(w, http.StatusOK, document.view())
+			readdressRetry(ctx, w, deps, &document, previous)
 			return
 		}
 		if occupant, found, _ := deps.index.GetTask(next); found &&
