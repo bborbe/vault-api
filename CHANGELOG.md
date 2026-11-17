@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`run_id` and `metrics_runs` are accepted, so a prototype run's `## Result` and `## Ledger` can reach its page at all.** The strategy-prototype agent's delivery carries `run_id` (its own re-run guard) and `metrics_runs` (the controller's transcription of the run's per-variant metrics); `agentPipelineFields` carried neither, so the whole patch was refused and the page kept its pre-run state. Measured 2026-11-17 on the dev stage: three prototype runs each parked `status: completed` / `phase: done` with **no `## Result` and no `## Ledger`** — `patch attempt 1 of 3 failed … 400 unknown_field field=run_id`, then `field=metrics_runs`. The frontmatter transition landed and the body was dropped with it. Both keys are stored and carried, not interpreted.
+
 ## v0.26.0
 
 - feat: **`Index.Build` loads task and goal pages through vault-cli `pkg/index` (v0.197.0) instead of calling `store.ListPages` directly.** Each build uses a fresh metadata page index over the same page storage, so typed `TaskItem`/`GoalItem` output, the REST surface and change events are unchanged; page bodies are still read per request via `ReadPage`. Build-time file reads now count as `page_read` rather than `page_list`.

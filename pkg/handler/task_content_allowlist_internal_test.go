@@ -45,6 +45,7 @@ import (
 //	controller buildUpdatePatch doctrines:  previous_assignee, max_triggers,
 //	                                        assignee, target_vault, current_job,
 //	                                        status, phase
+//	controller result writer:               run_id, metrics_runs
 //
 // The guarantee is one-way: a key added to this list or to agentPipelineFields
 // without the other fails the build. A producer that starts writing a NEW key
@@ -61,11 +62,13 @@ var controllerEmittedFrontmatterKeys = []string{
 	"job_started_at",
 	"last_result_status",
 	"max_triggers",
+	"metrics_runs",
 	"phase",
 	"previous_assignee",
 	"processed_at",
 	"queued_at",
 	"recovery_sha",
+	"run_id",
 	"spawn_notification",
 	"stage",
 	"status",

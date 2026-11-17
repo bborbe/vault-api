@@ -241,6 +241,21 @@ var agentPipelineFields = map[string]bool{
 	// this only surfaced on dev.
 	"run_outcome":    true, // github-pr-review-agent stampRunOutcome
 	"failure_reason": true, // github-pr-review-agent stampRunOutcome
+
+	// The strategy-prototype agent's own run record, written on the delivery
+	// that carries its ## Result and ## Ledger. run_id is the agent's publish
+	// step's guard against running one idea twice; metrics_runs is the
+	// controller's transcription of the run's per-variant metrics. Neither was
+	// in this set, so the whole result delivery was refused and the page kept
+	// its pre-run state.
+	//
+	// Measured 2026-11-17 on the dev stage: three prototype runs each ended
+	// `status: completed` / `phase: done` with NO ## Result and NO ## Ledger —
+	// `patch attempt 1 of 3 failed … 400 unknown_field field=run_id`, then
+	// `field=metrics_runs`. The frontmatter transition landed and the body was
+	// dropped with it, so the run's verdict reached its page not at all.
+	"run_id":       true, // the strategy-prototype agent's publish step, carried by the controller's patch
+	"metrics_runs": true, // the controller's result writer, transcribed from the run's metrics
 }
 
 // unionFields returns a fresh map holding every key of the given sets.
