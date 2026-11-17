@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.26.0
 
 - feat: **`Index.Build` loads task and goal pages through vault-cli `pkg/index` (v0.197.0) instead of calling `store.ListPages` directly.** Each build uses a fresh metadata page index over the same page storage, so typed `TaskItem`/`GoalItem` output, the REST surface and change events are unchanged; page bodies are still read per request via `ReadPage`. Build-time file reads now count as `page_read` rather than `page_list`.
 
