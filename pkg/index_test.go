@@ -177,13 +177,123 @@ var _ = Describe("Index", func() {
 		writeFile(tasksDir, "Alpha", taskFrontmatter("status: next"))
 		Expect(index.Build(ctx, store)).To(Succeed())
 
-		afterBuild := metrics.reads[vaultapi.FileReadKindList]
+		afterBuild := metrics.reads[vaultapi.FileReadKindRead]
 		Expect(afterBuild).To(BeNumerically(">", 0))
 
 		index.QueryTasks(vaultapi.TaskFilter{Assignee: "bborbe"})
 		index.QueryTasks(vaultapi.TaskFilter{Phase: "execution"})
 		index.QueryGoals()
-		Expect(metrics.reads[vaultapi.FileReadKindList]).To(Equal(afterBuild))
+		Expect(metrics.reads[vaultapi.FileReadKindRead]).To(Equal(afterBuild))
+	})
+
+	It("loads its pages through the vault-cli page index, never a direct folder listing", func() {
+		writeFile(tasksDir, "Alpha", taskFrontmatter("status: next"))
+		writeFile(tasksDir, "Beta", taskFrontmatter("status: next"))
+		writeFile(goalsDir, "A Goal", "---\npage_type: goal\nstatus: next\n---\n\nBody\n")
+		Expect(index.Build(ctx, store)).To(Succeed())
+
+		Expect(metrics.reads[vaultapi.FileReadKindList]).To(Equal(int64(0)))
+		Expect(metrics.reads[vaultapi.FileReadKindRead]).To(Equal(int64(3)))
+	})
+
+	It("produces the same typed items a direct storage listing yields", func() {
+		writeFile(tasksDir, "Alpha", taskFrontmatter(
+			"status: in_progress",
+			"phase: execution",
+			"assignee: bborbe",
+			"task_identifier: 11111111-1111-1111-1111-111111111111",
+			"task_type: llm",
+			"short_id: abc",
+			"stage: dev",
+			"cluster: sun",
+			"flag: true",
+			"current_job: job-1",
+			"pr_state: open",
+			"goals:\n    - '[[Some Goal]]'",
+		))
+		writeFile(tasksDir, "Beta Task", taskFrontmatter("status: next"))
+		writeFile(tasksDir, "Bad Status", taskFrontmatter("status: bogus"))
+		writeFile(tasksDir, "Bad Phase", taskFrontmatter("status: next", "phase: nope"))
+		writeFile(tasksDir, "Broken", "---\nfoo: [\n---\n\nBody\n")
+		writeFile(
+			goalsDir,
+			"A Goal",
+			"---\npage_type: goal\nstatus: next\ngoal_identifier: g-1\nassignee: bborbe\nthemes:\n    - '[[T]]'\n---\n\nBody\n",
+		)
+		writeFile(goalsDir, "Plain Goal", "---\npage_type: goal\n---\n\nBody\n")
+		writeFile(goalsDir, "Bad Goal", "---\npage_type: goal\nstatus: bogus\n---\n\nBody\n")
+		Expect(index.Build(ctx, store)).To(Succeed())
+
+		taskPages, err := store.ListPages(ctx, vaultPath, "25 Tasks")
+		Expect(err).To(BeNil())
+		modified := map[string]*time.Time{}
+		for _, page := range taskPages {
+			modified[page.Name] = page.ModifiedDate
+		}
+		Expect(modified).To(HaveKey("Alpha"))
+		Expect(modified).To(HaveKey("Beta Task"))
+
+		cluster := "sun"
+		tasks, warnings, _ := index.QueryTasks(vaultapi.TaskFilter{})
+		Expect(warnings).To(Equal(3))
+		Expect(tasks).To(Equal([]vaultapi.TaskItem{
+			{
+				ID:         "11111111-1111-1111-1111-111111111111",
+				Title:      "Alpha",
+				Path:       "25 Tasks/Alpha.md",
+				Status:     "in_progress",
+				Phase:      "execution",
+				TaskType:   "llm",
+				ShortID:    "abc",
+				Stage:      "dev",
+				Assignee:   "bborbe",
+				Goals:      []string{"[[Some Goal]]"},
+				Cluster:    &cluster,
+				Flag:       true,
+				Vault:      "test",
+				CurrentJob: "job-1",
+				PRState:    "open",
+				UpdatedAt:  modified["Alpha"],
+			},
+			{
+				ID:        "beta-task",
+				Title:     "Beta Task",
+				Path:      "25 Tasks/Beta Task.md",
+				Status:    "next",
+				Goals:     []string{},
+				Vault:     "test",
+				UpdatedAt: modified["Beta Task"],
+			},
+		}))
+		_, _, invalid := index.GetTask("Bad Status")
+		Expect(invalid).To(Equal("unknown status bogus"))
+		_, _, invalid = index.GetTask("Bad Phase")
+		Expect(invalid).To(Equal("unknown phase nope"))
+		_, _, invalid = index.GetTask("Broken")
+		Expect(invalid).To(Equal("unparseable frontmatter"))
+
+		goals, goalWarnings, _ := index.QueryGoals()
+		Expect(goalWarnings).To(Equal(1))
+		Expect(goals).To(Equal([]vaultapi.GoalItem{
+			{
+				ID:       "g-1",
+				Title:    "A Goal",
+				Path:     "24 Goals/A Goal.md",
+				Status:   "next",
+				Themes:   []string{"[[T]]"},
+				Assignee: "bborbe",
+				Vault:    "test",
+			},
+			{
+				ID:     "plain-goal",
+				Title:  "Plain Goal",
+				Path:   "24 Goals/Plain Goal.md",
+				Themes: []string{},
+				Vault:  "test",
+			},
+		}))
+		_, _, invalid = index.GetGoal("Bad Goal")
+		Expect(invalid).To(Equal("unknown status bogus"))
 	})
 
 	It("counts one direct page read", func() {

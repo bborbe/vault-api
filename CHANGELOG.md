@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`Index.Build` loads task and goal pages through vault-cli `pkg/index` (v0.197.0) instead of calling `store.ListPages` directly.** Each build uses a fresh metadata page index over the same page storage, so typed `TaskItem`/`GoalItem` output, the REST surface and change events are unchanged; page bodies are still read per request via `ReadPage`. Build-time file reads now count as `page_read` rather than `page_list`.
+
 ## v0.25.0
 
 - feat: **every working phase (`planning`, `execution`, `ai_review`) may transition to `done`, so the executor's succeeded park can close a record.** `PublishParkSucceeded` writes `status: completed` + `phase: done` from the phase a Job succeeded at and never advanced; `phaseEdges` allowed `done` only from `human_review`, and the executor treats `human_review` as terminal (`terminalPhases`), so the park never evaluates it and the write was refused `invalid_transition: planning -> done` on every phase the park could act on — measured 2026-11-17 on `vault-api v0.23.1` + `agent-task-executor v0.64.2`. The new edge is the succeeded park's (finished work that needs no human), distinct from the `human_review` edges that serve the cap park. `todo` stays excluded: leaving the approval inbox is an approval, not a close.
