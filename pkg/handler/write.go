@@ -39,6 +39,11 @@ const publishTimeout = 5 * time.Second
 // to a path, the vault path supplies the original bytes, the writer sends the
 // rendered file to git-rest, the clock stamps an approval, and the publisher
 // turns a landed write into a change event on the task topic.
+//
+// differ reads a page as it exists at a committed ref. It is here because the
+// read of one task is served by this same dep set, and the committed view is the
+// only one that can answer "did this write land" — the working tree holds a
+// write for up to a full git-rest commit window before any commit does.
 type writeDeps struct {
 	index         *vaultapi.Index
 	store         storage.PageStorage
@@ -49,6 +54,7 @@ type writeDeps struct {
 	clock         libtime.CurrentDateTime
 	publisher     publisher.TaskPublisher
 	gatewaySecret string
+	differ        vaultapi.Differ
 }
 
 // phaseRequest is the body of PATCH /api/v1/tasks/{id}/phase. ApprovedBy is a

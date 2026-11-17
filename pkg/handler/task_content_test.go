@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -926,7 +927,9 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].path).To(Equal("25 Tasks/Alpha.md"))
 			Expect(writer.calls[0].content).To(ContainSubstring("task-2"))
-			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier_previous: legacy-id"))
+			Expect(
+				writer.calls[0].content,
+			).To(ContainSubstring("task_identifier_previous: legacy-id"))
 		})
 
 		It("omits previous entirely when the request does not name one", func() {
@@ -952,7 +955,9 @@ var _ = Describe("Task content endpoints", func() {
 			)
 			Expect(recorder.Code).To(Equal(http.StatusOK))
 			Expect(writer.calls).To(HaveLen(1))
-			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier_previous: legacy-id"))
+			Expect(
+				writer.calls[0].content,
+			).To(ContainSubstring("task_identifier_previous: legacy-id"))
 		})
 
 		It("ignores a previous equal to the new address", func() {
@@ -967,5 +972,138 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(HaveLen(1))
 			Expect(writer.calls[0].content).NotTo(ContainSubstring("task_identifier_previous"))
 		})
+	})
+})
+
+// The ref-qualified read exists for one caller shape: a component that wrote
+// through the API and must decide whether the write LANDED. The working tree
+// answers that question wrongly for up to one git-rest commit window, because a
+// write reaches the tree the moment vault-api accepts it. These specs hold a
+// real git repository so the committed view is produced by `git show`, not by a
+// fake that could agree with whatever the handler does.
+var _ = Describe("Task content read at a ref", func() {
+	const secret = "test-secret"
+	const identifier = "11111111-2222-3333-4444-555555555555"
+
+	var (
+		ctx       context.Context
+		vaultPath string
+		tasksDir  string
+		index     *vaultapi.Index
+		router    http.Handler
+	)
+
+	runGit := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", vaultPath}, args...)...)
+		out, err := cmd.CombinedOutput()
+		Expect(err).To(BeNil(), "git %v: %s", args, string(out))
+	}
+
+	// write records the task at the given phase and rebuilds the index over it.
+	write := func(phase string) {
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "Alpha.md"),
+			[]byte(
+				"---\ntask_identifier: "+identifier+
+					"\nstatus: in_progress\nphase: "+phase+"\n---\nbody\n",
+			),
+			0o600,
+		)).To(Succeed())
+		config := storage.DefaultConfig()
+		config.TasksDir = "25 Tasks"
+		config.GoalsDir = "24 Goals"
+		Expect(index.Build(ctx, storage.NewPageStorage(config))).To(Succeed())
+	}
+
+	read := func(path string) (int, map[string]any) {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-Gateway-Secret", secret)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		var body map[string]any
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &body)).To(Succeed())
+		return recorder.Code, body
+	}
+
+	phaseOf := func(body map[string]any) any {
+		frontmatter, ok := body["frontmatter"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		return frontmatter["phase"]
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		vaultPath, err = os.MkdirTemp("", "vault-api-ref")
+		Expect(err).To(BeNil())
+		tasksDir = filepath.Join(vaultPath, "25 Tasks")
+		Expect(os.MkdirAll(tasksDir, 0o700)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(vaultPath, "24 Goals"), 0o700)).To(Succeed())
+
+		index = vaultapi.NewIndex(vaultapi.Config{
+			VaultPath: vaultPath,
+			VaultName: "test",
+			TasksDir:  "25 Tasks",
+			GoalsDir:  "24 Goals",
+		}, fakeMetrics{})
+
+		router = handler.NewHandler(
+			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", &fakeWriter{},
+			libtime.NewCurrentDateTime(), &recordingPublisher{}, &fakeRefClient{},
+		)
+
+		runGit("init", "-q")
+		runGit("config", "user.email", "test@example.com")
+		runGit("config", "user.name", "test")
+	})
+
+	AfterEach(func() {
+		Expect(os.RemoveAll(vaultPath)).To(Succeed())
+	})
+
+	It("serves the committed view while the working tree holds a newer write", func() {
+		write("planning")
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", "committed")
+
+		// The working tree moves and no commit follows: exactly the state every
+		// write is in until git-rest flushes, which is the window this route
+		// exists to look past.
+		write("done")
+
+		code, body := read("/api/v1/tasks/" + identifier)
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(phaseOf(body)).To(Equal("done"))
+
+		code, body = read("/api/v1/tasks/" + identifier + "?ref=HEAD")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(phaseOf(body)).To(Equal("planning"))
+	})
+
+	It("answers 404 when the ref resolves but does not carry the record", func() {
+		// The repository has history, so HEAD resolves — and the record is only
+		// in the working tree. 404 is the signal a caller waiting for a write to
+		// land needs, so it must not collapse into a 500.
+		Expect(os.WriteFile(
+			filepath.Join(vaultPath, "README.md"), []byte("baseline\n"), 0o600,
+		)).To(Succeed())
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", "baseline")
+
+		write("planning")
+
+		code, _ := read("/api/v1/tasks/" + identifier + "?ref=HEAD")
+		Expect(code).To(Equal(http.StatusNotFound))
+	})
+
+	It("answers 500 when the ref does not resolve at all", func() {
+		// A bad ref is a configuration fault, not a write that has not landed.
+		// Reporting it as 404 would make every write look dropped.
+		write("planning")
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", "committed")
+
+		code, _ := read("/api/v1/tasks/" + identifier + "?ref=no-such-ref")
+		Expect(code).To(Equal(http.StatusInternalServerError))
 	})
 })

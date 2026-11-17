@@ -60,6 +60,9 @@ func NewHandler(
 		clock:         clock,
 		publisher:     taskPublisher,
 		gatewaySecret: gatewaySecret,
+		// The ref-qualified read needs nothing but the vault path, so it is
+		// constructed here rather than threaded through every caller.
+		differ: vaultapi.NewGitDiffer(vaultPath),
 	}
 
 	router := mux.NewRouter()

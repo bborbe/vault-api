@@ -34,6 +34,15 @@ type Change struct {
 	Status ChangeStatus
 }
 
+// ErrNotAtRef reports that a ref resolves but does not carry the requested path.
+//
+// It is deliberately distinct from a failure about the ref itself, because the
+// two mean opposite things to a caller waiting for a write to land: "not
+// committed yet" is the expected state before the next git-rest flush, while an
+// unresolvable ref is a configuration fault. Collapsing them would make a typo in
+// a ref name indistinguishable from every write being dropped.
+var ErrNotAtRef = stderrors.New("path is not present at the ref")
+
 //counterfeiter:generate -o ../mocks/differ.go --fake-name Differ . Differ
 
 // Differ reports the files that changed between two commits, and reads a file as
@@ -102,9 +111,17 @@ func (d *gitDiffer) Diff(ctx context.Context, oldHead string, newHead string) ([
 }
 
 // ReadAt returns a path's content at the given commit.
+//
+// A ref that resolves but does not carry the path returns ErrNotAtRef, so a
+// caller can tell "this write has not been committed yet" from "this ref is
+// wrong". Only the first is an expected state: git-rest commits on a cadence, so
+// every write spends up to one window absent from the committed history.
 func (d *gitDiffer) ReadAt(ctx context.Context, head string, path string) ([]byte, error) {
 	out, err := d.git(ctx, "show", head+":"+path)
 	if err != nil {
+		if exists, existsErr := d.Exists(ctx, head); existsErr == nil && exists {
+			return nil, errors.Wrapf(ctx, ErrNotAtRef, "read %s at %s", path, head)
+		}
 		return nil, errors.Wrapf(ctx, err, "read %s at %s failed", path, head)
 	}
 	return []byte(out), nil
