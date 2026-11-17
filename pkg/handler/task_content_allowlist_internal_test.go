@@ -90,6 +90,7 @@ var otherProducerFields = map[string]bool{
 	"current_version":   true, // the release watcher
 	"date":              true, // the sentry producers
 	"episode_sha":       true, // github-build-watcher
+	"failure_reason":    true, // github-pr-review-agent stampRunOutcome
 	"issue_url":         true, // sentry-watcher
 	"latest_go":         true, // github-update-go-watcher
 	"launcher":          true, // recurring-task-creator
@@ -103,6 +104,7 @@ var otherProducerFields = map[string]bool{
 	"release_notes_url": true, // go-version-watcher
 	"repo":              true, // the release watcher
 	"retry_count":       true, // the controller's result writer, on the git path
+	"run_outcome":       true, // github-pr-review-agent stampRunOutcome
 	"short_id":          true, // sentry-watcher
 	"title":             true, // every watcher's create
 	"vuln_count":        true, // github-vuln-watcher
