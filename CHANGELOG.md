@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.25.1
 
 - fix: **`run_outcome` and `failure_reason` are accepted, so a dev-stage pr-review record can be written at all.** `bborbe/github-pr-review-agent`'s `stampRunOutcome` writes both on every terminal routing (`post_failed` / `no_review` / `budget_expired`), and `agentPipelineFields` carried neither — so the COMPLETE-TASK patch was refused `400 unknown_field field=run_outcome` and, because the refusal fails the whole read-modify-write, the record kept its pre-run state and lost its `## Diagnostics` block with it. Measured 2026-11-17 on the dev stage, agent `v0.18.2`, task `f88cced8`: `patch attempt 3 of 3 failed … unknown_field`. Prod writes through a vault whose writer already accepts the pair, which is why only dev surfaced it. Both keys are stored and carried, not interpreted.
 
