@@ -288,15 +288,15 @@ var _ = Describe("Write endpoints", func() {
 
 			recorder := call(
 				http.MethodPatch, "/api/v1/tasks/"+taskIdentifier+"/phase",
-				`{"phase":"done"}`,
+				`{"phase":"ai_review"}`,
 			)
 
 			Expect(recorder.Code).To(Equal(http.StatusConflict))
 			body := decode(recorder)
 			Expect(body["error"]).To(Equal("invalid_transition"))
 			Expect(body["from"]).To(Equal("planning"))
-			Expect(body["to"]).To(Equal("done"))
-			Expect(body["allowed"]).To(Equal([]any{"execution", "human_review"}))
+			Expect(body["to"]).To(Equal("ai_review"))
+			Expect(body["allowed"]).To(Equal([]any{"execution", "human_review", "done"}))
 			Expect(body["path"]).To(Equal("25 Tasks/Alpha.md"))
 			Expect(writer.calls).To(BeEmpty())
 		})

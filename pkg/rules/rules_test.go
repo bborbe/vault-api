@@ -49,24 +49,25 @@ var phaseCases = []phaseCase{
 	{domain.TaskPhasePlanning, domain.TaskPhaseExecution, true, ""},
 	{domain.TaskPhasePlanning, domain.TaskPhaseAIReview, false, rules.CodeInvalidTransition},
 	// The park writes human_review directly from whatever phase the record is
-	// stuck in, so both of these are legal. planning -> ai_review above stays
-	// forbidden: a record that never left planning has nothing to review.
+	// stuck in (cap park), and the succeeded park writes done from the same
+	// phases, so these are legal. planning -> ai_review above stays forbidden: a
+	// record that never left planning has nothing to review.
 	{domain.TaskPhasePlanning, domain.TaskPhaseHumanReview, true, ""},
-	{domain.TaskPhasePlanning, domain.TaskPhaseDone, false, rules.CodeInvalidTransition},
+	{domain.TaskPhasePlanning, domain.TaskPhaseDone, true, ""},
 
 	{domain.TaskPhaseExecution, domain.TaskPhaseTodo, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseExecution, domain.TaskPhasePlanning, true, ""},
 	{domain.TaskPhaseExecution, domain.TaskPhaseExecution, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseExecution, domain.TaskPhaseAIReview, true, ""},
 	{domain.TaskPhaseExecution, domain.TaskPhaseHumanReview, true, ""},
-	{domain.TaskPhaseExecution, domain.TaskPhaseDone, false, rules.CodeInvalidTransition},
+	{domain.TaskPhaseExecution, domain.TaskPhaseDone, true, ""},
 
 	{domain.TaskPhaseAIReview, domain.TaskPhaseTodo, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseAIReview, domain.TaskPhasePlanning, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseAIReview, domain.TaskPhaseExecution, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseAIReview, domain.TaskPhaseAIReview, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseAIReview, domain.TaskPhaseHumanReview, true, ""},
-	{domain.TaskPhaseAIReview, domain.TaskPhaseDone, false, rules.CodeInvalidTransition},
+	{domain.TaskPhaseAIReview, domain.TaskPhaseDone, true, ""},
 
 	{domain.TaskPhaseHumanReview, domain.TaskPhaseTodo, false, rules.CodeInvalidTransition},
 	{domain.TaskPhaseHumanReview, domain.TaskPhasePlanning, false, rules.CodeInvalidTransition},
@@ -132,10 +133,13 @@ var statusCases = []statusCase{
 var legalPhasePairs = []string{
 	"planning->execution",
 	"planning->human_review",
+	"planning->done",
 	"execution->ai_review",
 	"execution->planning",
 	"execution->human_review",
+	"execution->done",
 	"ai_review->human_review",
+	"ai_review->done",
 	"human_review->done",
 }
 
@@ -171,16 +175,16 @@ var _ = Describe("ValidatePhaseTransition", func() {
 		Expect(refusal.Allowed).To(Equal([]string{rules.ApproveEndpoint}))
 	})
 
-	It("lists the single legal target in an invalid transition's allowed set", func() {
+	It("lists the legal targets in an invalid transition's allowed set", func() {
 		err := rules.ValidatePhaseTransition(
-			domain.TaskPhasePlanning, domain.TaskPhaseDone,
+			domain.TaskPhasePlanning, domain.TaskPhaseAIReview,
 		)
 		var refusal *rules.RefusalError
 		Expect(errors.As(err, &refusal)).To(BeTrue())
 		Expect(refusal.Code).To(Equal(rules.CodeInvalidTransition))
 		Expect(refusal.From).To(Equal("planning"))
-		Expect(refusal.To).To(Equal("done"))
-		Expect(refusal.Allowed).To(Equal([]string{"execution", "human_review"}))
+		Expect(refusal.To).To(Equal("ai_review"))
+		Expect(refusal.Allowed).To(Equal([]string{"execution", "human_review", "done"}))
 	})
 })
 
