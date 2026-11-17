@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.25.0
 
 - feat: **every working phase (`planning`, `execution`, `ai_review`) may transition to `done`, so the executor's succeeded park can close a record.** `PublishParkSucceeded` writes `status: completed` + `phase: done` from the phase a Job succeeded at and never advanced; `phaseEdges` allowed `done` only from `human_review`, and the executor treats `human_review` as terminal (`terminalPhases`), so the park never evaluates it and the write was refused `invalid_transition: planning -> done` on every phase the park could act on — measured 2026-11-17 on `vault-api v0.23.1` + `agent-task-executor v0.64.2`. The new edge is the succeeded park's (finished work that needs no human), distinct from the `human_review` edges that serve the cap park. `todo` stays excluded: leaving the approval inbox is an approval, not a close.
 
