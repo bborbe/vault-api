@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1105,5 +1106,45 @@ var _ = Describe("Task content read at a ref", func() {
 
 		code, _ := read("/api/v1/tasks/" + identifier + "?ref=no-such-ref")
 		Expect(code).To(Equal(http.StatusInternalServerError))
+	})
+
+	It("refuses a ref that git would parse as an option, and writes no file", func() {
+		// git reads a leading `-` in argument position as a flag, and
+		// `--output=<path>` makes `git show` create or truncate that file. The
+		// route must never hand such a value to git at all.
+		write("planning")
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", "committed")
+
+		victim := filepath.Join(vaultPath, "probe-out-zz")
+		request := httptest.NewRequest(
+			http.MethodGet,
+			"/api/v1/tasks/"+identifier+"?ref="+url.QueryEscape("--output="+victim),
+			nil,
+		)
+		request.Header.Set("X-Gateway-Secret", secret)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+		_, statErr := os.Stat(victim)
+		Expect(os.IsNotExist(statErr)).To(BeTrue(), "the ref must never reach git as a flag")
+	})
+
+	It("serves an older commit, not only HEAD", func() {
+		// The feature's claim is "read at an arbitrary ref", so a non-HEAD ref
+		// has to be exercised rather than assumed.
+		write("planning")
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", "first")
+		runGit("tag", "before-done")
+
+		write("done")
+		runGit("add", ".")
+		runGit("commit", "-q", "-m", "second")
+
+		code, body := read("/api/v1/tasks/" + identifier + "?ref=before-done")
+		Expect(code).To(Equal(http.StatusOK))
+		Expect(phaseOf(body)).To(Equal("planning"))
 	})
 })

@@ -284,6 +284,13 @@ func handleGetTaskDocument(deps writeDeps) http.HandlerFunc {
 // The index still supplies the path: a record that has never been committed has
 // no path at the ref either, and answering from the index is what keeps the
 // route's identifier addressing identical on both views.
+//
+// ⚠️ ID and Title are the working-tree projection, not the committed ones. In the
+// window this route exists to serve — a working-tree write that has not committed
+// — a re-addressed or renamed task therefore reports the working-tree ID/Title
+// alongside the committed frontmatter and body. Callers comparing ID against
+// frontmatter.task_identifier must treat a mismatch as that window, not as
+// corruption.
 func loadCommittedDocument(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -317,10 +324,17 @@ func loadCommittedDocument(
 			})
 			return document{}, false
 		}
+		if errors.Is(err, vaultapi.ErrInvalidRef) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid_ref",
+			})
+			return document{}, false
+		}
+		// A fixed reason: the underlying error carries git's argv and stderr,
+		// which would echo the vault's on-disk paths back to the caller. The
+		// detail is logged by the differ.
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error":  "read_failed",
-			"reason": err.Error(),
-			"path":   item.Path,
+			"error": "read_failed",
 		})
 		return document{}, false
 	}
