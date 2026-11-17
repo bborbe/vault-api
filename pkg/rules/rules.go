@@ -79,19 +79,35 @@ func (r *RefusalError) Error() string {
 // ai_review -> human_review edge stays for the ordinary case, where a review
 // really did run.
 //
+// Every working phase (planning, execution, ai_review) also reaches done
+// directly. That edge is the succeeded park's: a Job that exits 0 without
+// advancing the phase is finished work, not work that needs a human, so the
+// executor's PublishParkSucceeded closes the record from the phase it still
+// sits at. Without it that write is refused (`invalid_transition: planning ->
+// done`) and a finished record never terminalises — it is re-driven until the
+// re-drive cap parks it again. This is distinct from the human_review edges
+// above, which serve the cap park (a record that needs a human); done is the
+// succeeded park (a record that does not). todo is still excluded: leaving the
+// approval inbox is an approval, not a close.
+//
 // planning -> ai_review stays absent on purpose: a record that has never left
 // planning has nothing to review yet.
 var phaseEdges = map[domain.TaskPhase][]domain.TaskPhase{
 	domain.TaskPhasePlanning: {
 		domain.TaskPhaseExecution,
 		domain.TaskPhaseHumanReview,
+		domain.TaskPhaseDone,
 	},
 	domain.TaskPhaseExecution: {
 		domain.TaskPhaseAIReview,
 		domain.TaskPhasePlanning,
 		domain.TaskPhaseHumanReview,
+		domain.TaskPhaseDone,
 	},
-	domain.TaskPhaseAIReview:    {domain.TaskPhaseHumanReview},
+	domain.TaskPhaseAIReview: {
+		domain.TaskPhaseHumanReview,
+		domain.TaskPhaseDone,
+	},
 	domain.TaskPhaseHumanReview: {domain.TaskPhaseDone},
 }
 
