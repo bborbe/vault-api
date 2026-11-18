@@ -410,6 +410,40 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls).To(BeEmpty())
 		})
 
+		// The strategy-prototype agent's run record carries a metrics_ namespace
+		// whose key list lives in another repository. A closed list refused the
+		// whole patch on the first new key, so a run that succeeded perfectly
+		// still lost its ## Data and ## Result — measured 2026-11-18 on dev
+		// vault-api v0.27.1: six keys refused, 240 attempts in 24 h.
+		It("accepts a metrics_ key the allowlist never enumerated", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			recorder := call(
+				http.MethodPatch,
+				"/api/v1/tasks/task-1",
+				`{"metrics_zzz_unseen":7,"metrics_agent_turns":3}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring("metrics_zzz_unseen:"))
+			Expect(writer.calls[0].content).To(ContainSubstring("metrics_agent_turns:"))
+		})
+
+		// The prefix must not widen into "any unknown key". "metrics" without the
+		// trailing underscore is a different key, and it is not this namespace.
+		It("refuses a near-miss key that only looks prefixed", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			for _, key := range []string{"metrics", "metricsx_unseen", "unseen_metrics_x"} {
+				recorder := call(
+					http.MethodPatch, "/api/v1/tasks/task-1", `{"`+key+`":"x"}`,
+				)
+				Expect(recorder.Code).To(
+					Equal(http.StatusBadRequest), key+" must not be admitted by the prefix",
+				)
+				Expect(decode(recorder)["error"]).To(Equal("unknown_field"))
+			}
+			Expect(writer.calls).To(BeEmpty())
+		})
+
 		It("refuses the approval record, which the approve endpoint owns", func() {
 			seed("task_identifier: task-1\nstatus: in_progress\n")
 			recorder := call(
