@@ -34,6 +34,15 @@ type Change struct {
 	Status ChangeStatus
 }
 
+// ErrNotAtRef reports that a ref resolves but does not carry the requested path.
+//
+// It is deliberately distinct from a failure about the ref itself, because the
+// two mean opposite things to a caller waiting for a write to land: "not
+// committed yet" is the expected state before the next git-rest flush, while an
+// unresolvable ref is a configuration fault. Collapsing them would make a typo in
+// a ref name indistinguishable from every write being dropped.
+var ErrNotAtRef = stderrors.New("path is not present at the ref")
+
 //counterfeiter:generate -o ../mocks/differ.go --fake-name Differ . Differ
 
 // Differ reports the files that changed between two commits, and reads a file as
@@ -101,13 +110,85 @@ func (d *gitDiffer) Diff(ctx context.Context, oldHead string, newHead string) ([
 	return changes, nil
 }
 
+// ErrInvalidRef reports a ref this package refuses to hand to git.
+//
+// A ref can reach ReadAt from a request query string, and git parses a leading
+// `-` in argument position as an option: `--output=<file>` makes `git show`
+// create or truncate a file. Rejecting the shape here is what keeps the value
+// from being an argument at all.
+var ErrInvalidRef = stderrors.New("invalid ref")
+
+// validRef reports whether ref is safe to place in git's argument position.
+//
+// The accepted set is deliberately narrow — the characters a branch, tag or SHA
+// needs — because the cost of rejecting an exotic but legal ref is a clear error,
+// while the cost of admitting one is an option-injection primitive.
+func validRef(ref string) bool {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return false
+	}
+	for _, r := range ref {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '/' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ReadAt returns a path's content at the given commit.
+//
+// A ref that resolves but does not carry the path returns ErrNotAtRef, so a
+// caller can tell "this write has not been committed yet" from "this ref is
+// wrong". Only the first is an expected state: git-rest commits on a cadence, so
+// every write spends up to one window absent from the committed history.
+//
+// The ref is validated before it reaches git, and `--end-of-options` marks where
+// options stop, so a ref-shaped string can never be read as a flag.
 func (d *gitDiffer) ReadAt(ctx context.Context, head string, path string) ([]byte, error) {
-	out, err := d.git(ctx, "show", head+":"+path)
+	if !validRef(head) {
+		return nil, errors.Wrapf(ctx, ErrInvalidRef, "ref %q is not a ref-safe name", head)
+	}
+	out, err := d.git(ctx, "show", "--end-of-options", head+":"+path)
 	if err != nil {
+		// Only "the ref resolves and the path is absent" is the expected
+		// not-committed-yet state. Everything else — an unresolvable ref, a
+		// corrupt object, an unreadable repository — must stay an error, or a
+		// broken read would be reported to a waiting caller as "not landed".
+		exists, existsErr := d.Exists(ctx, head)
+		if existsErr != nil || !exists {
+			return nil, errors.Wrapf(ctx, err, "read %s at %s failed", path, head)
+		}
+		if atRef, atRefErr := d.existsAt(ctx, head, path); atRefErr == nil && !atRef {
+			return nil, errors.Wrapf(ctx, ErrNotAtRef, "read %s at %s", path, head)
+		}
 		return nil, errors.Wrapf(ctx, err, "read %s at %s failed", path, head)
 	}
 	return []byte(out), nil
+}
+
+// existsAt reports whether path is present in the tree of a ref that is already
+// known to resolve.
+func (d *gitDiffer) existsAt(ctx context.Context, head string, path string) (bool, error) {
+	// #nosec G204 -- the binary is the literal "git", head has been validated by
+	// validRef, and path comes from the index rather than from a request.
+	cmd := exec.CommandContext(
+		ctx,
+		"git",
+		d.baseArgs("cat-file", "-e", head+":"+path)...,
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if stderrors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
+			return false, nil
+		}
+		return false, errors.Wrapf(ctx, err, "git cat-file %s:%s: %s", head, path, strings.TrimSpace(stderr.String()))
+	}
+	return true, nil
 }
 
 // Exists reports whether commit resolves to a commit object in the repository.

@@ -6,6 +6,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -265,14 +266,106 @@ func (d document) view() TaskDocument {
 }
 
 // handleGetTaskDocument serves GET /api/v1/tasks/{id}.
+//
+// ?ref=<ref> serves the same document read from the committed history instead of
+// the working tree. The two views differ for up to one git-rest commit window:
+// a write is in the working tree the moment vault-api accepts it, while the
+// commit that carries it lands on git-rest's cadence. A caller verifying that a
+// write landed must ask for the committed view, because the working-tree view
+// already reports a write that has not been committed at all.
 func handleGetTaskDocument(deps writeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if ref := strings.TrimSpace(r.URL.Query().Get("ref")); ref != "" {
+			document, ok := loadCommittedDocument(r.Context(), w, deps, mux.Vars(r)["id"], ref)
+			if !ok {
+				return
+			}
+			writeJSON(w, http.StatusOK, document.view())
+			return
+		}
 		document, ok := loadDocument(r.Context(), w, deps, mux.Vars(r)["id"])
 		if !ok {
 			return
 		}
 		writeJSON(w, http.StatusOK, document.view())
 	}
+}
+
+// loadCommittedDocument resolves the id through the index and reads the page as
+// it exists at ref, rather than as the working tree currently holds it.
+//
+// The index still supplies the path: a record that has never been committed has
+// no path at the ref either, and answering from the index is what keeps the
+// route's identifier addressing identical on both views.
+//
+// ⚠️ ID and Title are the working-tree projection, not the committed ones. In the
+// window this route exists to serve — a working-tree write that has not committed
+// — a re-addressed or renamed task therefore reports the working-tree ID/Title
+// alongside the committed frontmatter and body. Callers comparing ID against
+// frontmatter.task_identifier must treat a mismatch as that window, not as
+// corruption.
+func loadCommittedDocument(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps writeDeps,
+	id string,
+	ref string,
+) (document, bool) {
+	item, found, invalid := deps.index.GetTask(id)
+	if !found {
+		if invalid != "" {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+				"error":  "invalid_frontmatter",
+				"reason": invalid,
+				"path":   id,
+			})
+			return document{}, false
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return document{}, false
+	}
+	raw, err := deps.differ.ReadAt(ctx, ref, item.Path)
+	if err != nil {
+		// A path absent from a ref that does resolve is the ordinary
+		// not-committed-yet state, and 404 is what lets the caller treat it as
+		// "not landed" rather than as a broken read.
+		if errors.Is(err, vaultapi.ErrNotAtRef) {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error":  "not_found",
+				"reason": "not present at ref " + ref,
+				"path":   item.Path,
+			})
+			return document{}, false
+		}
+		if errors.Is(err, vaultapi.ErrInvalidRef) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid_ref",
+			})
+			return document{}, false
+		}
+		// A fixed reason: the underlying error carries git's argv and stderr,
+		// which would echo the vault's on-disk paths back to the caller. The
+		// detail is logged by the differ.
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "read_failed",
+		})
+		return document{}, false
+	}
+	frontmatter, err := storage.ParseFrontmatterMap(ctx, raw)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error":  "invalid_frontmatter",
+			"reason": err.Error(),
+			"path":   item.Path,
+		})
+		return document{}, false
+	}
+	return document{
+		item:        item,
+		raw:         raw,
+		frontmatter: frontmatter,
+		changed:     map[string]any{},
+	}, true
 }
 
 // handlePatchTask serves PATCH /api/v1/tasks/{id}: a typed partial update of the
