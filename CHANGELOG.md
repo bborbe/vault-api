@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.28.0
 
 - feat: carry an optional `spawned_at` on the claim routes, so a peer that takes an expired claim over can tell a holder that created its Job from one that only held the key. Accepted on renew only — an acquire drops it, because a marker at acquisition would assert a Job that does not exist yet — and a renew that names none keeps the stored value, so the holder's own 60 s renewal loop cannot erase it. Surfaced on `GET /api/v1/tasks/{id}/claim`, on the write responses and on `GET /api/v1/claims`. Additive and omitted when unset, so an older reader is unaffected.
 
