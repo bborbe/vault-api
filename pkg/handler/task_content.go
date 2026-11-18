@@ -547,6 +547,33 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 	}
 }
 
+// metricsFieldPrefix admits the strategy-prototype agent's run-record namespace
+// as a prefix rather than as enumerated keys.
+//
+// The two sets above stay closed, and every other unknown key still answers 400
+// unknown_field. This one namespace is prefix-matched because its key list is
+// not this API's to freeze: the executor's per-run token budget and the
+// controller's accumulatedCounters both live in another repository, and a new
+// metrics_ key there must not require a vault-api release before the agent can
+// publish a verdict. A closed list refuses the WHOLE read-modify-write patch on
+// the first unknown key, so one new counter costs the entire ## Data and
+// ## Result, not just that counter.
+//
+// Measured 2026-11-18 on dev vault-api v0.27.1: six metrics_ keys refused,
+// 240 attempts in 24 h, every one of them a successful prototype run that could
+// not write its page. run_id and metrics_runs were already enumerated (they were
+// the 2026-11-17 instance of this same class); the next key was the next
+// outage, which is why the fix is the prefix and not six more lines.
+//
+// The namespace is narrow on purpose: only "metrics_" prefixed keys bypass the
+// closed sets. A non-metrics_ unknown key is still refused, so the drift control
+// the two allowlists exist for survives.
+const metricsFieldPrefix = "metrics_"
+
+func prefixAdmitted(key string) bool {
+	return strings.HasPrefix(key, metricsFieldPrefix)
+}
+
 // fieldRefusal answers the request itself when a named field may not be written
 // through this route, and returns "" when every field is allowed. Both write
 // routes go through it, so a key one of them refuses cannot be written through
@@ -562,7 +589,7 @@ func fieldRefusal(
 			writeRefusalError(w, rules.RefuseApprovalRecordWrite(), path)
 			return "approval"
 		}
-		if !allowed[key] {
+		if !allowed[key] && !prefixAdmitted(key) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "unknown_field",
 				"field": key,
