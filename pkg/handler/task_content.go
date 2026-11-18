@@ -570,7 +570,7 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 // the two allowlists exist for survives.
 const metricsFieldPrefix = "metrics_"
 
-func prefixAdmitted(key string) bool {
+func metricsFieldAdmitted(key string) bool {
 	return strings.HasPrefix(key, metricsFieldPrefix)
 }
 
@@ -589,7 +589,7 @@ func fieldRefusal(
 			writeRefusalError(w, rules.RefuseApprovalRecordWrite(), path)
 			return "approval"
 		}
-		if !allowed[key] && !prefixAdmitted(key) {
+		if !allowed[key] && !metricsFieldAdmitted(key) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "unknown_field",
 				"field": key,
