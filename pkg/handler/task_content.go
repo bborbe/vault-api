@@ -229,6 +229,19 @@ var agentPipelineFields = map[string]bool{
 	// sets patch["recovery_sha"] in task_complete_task_executor.go. It belongs
 	// here because createFields unions patchFields — there is no second list.
 	"recovery_sha": true, // agent-task-controller complete-task patch
+	// run_outcome and failure_reason ride the COMPLETE-TASK patch from
+	// bborbe/github-pr-review-agent: stampRunOutcome writes them on every
+	// terminal routing (post_failed / no_review / budget_expired), so they
+	// arrive on any run that ends without posting a review.
+	//
+	// Refusing them failed the whole read-modify-write, not just the metadata —
+	// measured 2026-11-17 on the dev stage, agent v0.18.2, task f88cced8:
+	// `patch attempt 3 of 3 failed … 400 unknown_field field=run_outcome`, and
+	// the record kept its pre-run state with no ## Diagnostics block. The prod
+	// stage writes to a vault whose writer already accepts them, which is why
+	// this only surfaced on dev.
+	"run_outcome":    true, // github-pr-review-agent stampRunOutcome
+	"failure_reason": true, // github-pr-review-agent stampRunOutcome
 }
 
 // unionFields returns a fresh map holding every key of the given sets.
@@ -402,6 +415,26 @@ func handlePatchTask(deps writeDeps) http.HandlerFunc {
 	}
 }
 
+// readdressRetry answers a readdress whose target the task already carries. With
+// no previous there is nothing to write; otherwise previous is recorded alone.
+func readdressRetry(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps writeDeps,
+	document *document,
+	previous string,
+) {
+	if previous == "" {
+		writeJSON(w, http.StatusOK, document.view())
+		return
+	}
+	document.set("task_identifier_previous", previous)
+	if !document.persist(ctx, w, deps) {
+		return
+	}
+	writeJSON(w, http.StatusOK, document.view())
+}
+
 // readdressRequest is the body of POST /api/v1/tasks/{id}/readdress.
 //
 // Previous is optional and additive: a request that omits it behaves exactly as
@@ -463,15 +496,7 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 			// move must not lose the in-flight identity just because the
 			// identifier half already landed. With no previous there is nothing
 			// to write, so the no-op stays a no-op.
-			if previous == "" {
-				writeJSON(w, http.StatusOK, document.view())
-				return
-			}
-			document.set("task_identifier_previous", previous)
-			if !document.persist(ctx, w, deps) {
-				return
-			}
-			writeJSON(w, http.StatusOK, document.view())
+			readdressRetry(ctx, w, deps, &document, previous)
 			return
 		}
 		if occupant, found, _ := deps.index.GetTask(next); found &&
