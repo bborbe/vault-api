@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: carry an optional `spawned_at` on the claim routes, so a peer that takes an expired claim over can tell a holder that created its Job from one that only held the key. Accepted on renew only — an acquire drops it, because a marker at acquisition would assert a Job that does not exist yet — and a renew that names none keeps the stored value, so the holder's own 60 s renewal loop cannot erase it. Surfaced on `GET /api/v1/tasks/{id}/claim`, on the write responses and on `GET /api/v1/claims`. Additive and omitted when unset, so an older reader is unaffected.
+
 ## v0.27.1
 
 - fix: **`run_id` and `metrics_runs` are accepted, so a prototype run's `## Result` and `## Ledger` can reach its page at all.** The strategy-prototype agent's delivery carries `run_id` (its own re-run guard) and `metrics_runs` (the controller's transcription of the run's per-variant metrics); `agentPipelineFields` carried neither, so the whole patch was refused and the page kept its pre-run state. Measured 2026-11-17 on the dev stage: three prototype runs each parked `status: completed` / `phase: done` with **no `## Result` and no `## Ledger`** — `patch attempt 1 of 3 failed … 400 unknown_field field=run_id`, then `field=metrics_runs`. The frontmatter transition landed and the body was dropped with it. Both keys are stored and carried, not interpreted.

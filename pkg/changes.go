@@ -186,7 +186,14 @@ func (d *gitDiffer) existsAt(ctx context.Context, head string, path string) (boo
 		if stderrors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
 			return false, nil
 		}
-		return false, errors.Wrapf(ctx, err, "git cat-file %s:%s: %s", head, path, strings.TrimSpace(stderr.String()))
+		return false, errors.Wrapf(
+			ctx,
+			err,
+			"git cat-file %s:%s: %s",
+			head,
+			path,
+			strings.TrimSpace(stderr.String()),
+		)
 	}
 	return true, nil
 }
