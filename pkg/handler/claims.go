@@ -63,6 +63,10 @@ type claimRequest struct {
 	// repository claim, which has no task of its own, and ignored for a task
 	// claim where the addressed task supplies it.
 	TaskID string `json:"task_id"`
+	// SpawnedAt records the instant the holder created the claim's Job. It is
+	// accepted only on renew: an acquire starts a claim whose holder has not
+	// spawned yet, so a marker sent with it is dropped rather than stored.
+	SpawnedAt string `json:"spawned_at"`
 }
 
 // claimResponse is what every claim route answers with. It is deliberately the
@@ -75,6 +79,10 @@ type claimResponse struct {
 	LeaseUntil  string `json:"lease_until"`
 	RenewBefore string `json:"renew_before"`
 	LeaseToken  string `json:"lease_token"`
+	// SpawnedAt is absent on a claim whose holder has not created its Job, and on
+	// every claim written before the field existed. A reader treats absence as
+	// "this claim proves no Job was started", never as an error.
+	SpawnedAt string `json:"spawned_at,omitempty"`
 }
 
 // ClaimScope is one claim's address: the key the transport stores it under and
@@ -296,6 +304,11 @@ func claimWriteHandler(
 		now := deps.Clock.Now().Time().UTC()
 		leaseUntil := now.Add(time.Duration(ttl) * time.Second)
 
+		spawnedAt, ok := claimWriteSpawnedAt(w, r, deps, claimed, request, renew)
+		if !ok {
+			return
+		}
+
 		expectedSHA := request.LeaseToken
 		if !renew {
 			sha, held, err := acquireToken(r.Context(), deps.Refs, claimed.Key, now)
@@ -323,6 +336,7 @@ func claimWriteHandler(
 			Cluster:     request.Holder,
 			TaskID:      transportTaskID,
 			LeaseUntil:  leaseUntil.Format(time.RFC3339),
+			SpawnedAt:   spawnedAt,
 		})
 		if err != nil {
 			writeClaimWriteError(r.Context(), w, err, renew, deps.Refs, claimed.Key)
@@ -336,6 +350,7 @@ func claimWriteHandler(
 			LeaseUntil:  leaseUntil.Format(time.RFC3339),
 			RenewBefore: leaseUntil.Add(-RenewLeadSeconds * time.Second).Format(time.RFC3339),
 			LeaseToken:  ref.SHA,
+			SpawnedAt:   spawnedAt,
 		})
 	}
 }
@@ -448,6 +463,67 @@ func acquireToken(
 	return ref.SHA, nil, nil
 }
 
+// claimWriteSpawnedAt is the spawned_at a claim write carries. An acquire drops
+// any value the caller sent: a marker means "this holder created a Job", which
+// cannot be true at acquisition, and dropping it is what makes the field
+// discriminate a post-spawn write from an acquisition-time one.
+//
+// A renew keeps the stored value when it names none. Every tick renew comes from
+// a holder with no opinion on the field, and rewriting the ref without it would
+// erase the only evidence that this claim's holder ever spawned.
+//
+// ok is false once a response has been written.
+func claimWriteSpawnedAt(
+	w http.ResponseWriter,
+	r *http.Request,
+	deps ClaimDeps,
+	claimed ClaimScope,
+	request claimRequest,
+	renew bool,
+) (string, bool) {
+	if !renew {
+		return "", true
+	}
+	preserved, err := renewSpawnedAt(r.Context(), deps.Refs, claimed.Key, request.SpawnedAt)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "claim_read_failed"})
+		return "", false
+	}
+	return preserved, true
+}
+
+// renewSpawnedAt is the spawned_at a renew writes. A renew that names one uses
+// it; a renew that names none keeps the stored one.
+//
+// Keeping it is what makes the marker survive the holder's own renewal loop: the
+// lease loop renews every 60 s and knows nothing about the marker, so a
+// read-modify-write that dropped it would erase the evidence within a minute of
+// the spawn. A failed read fails the renew rather than writing a claim without
+// the marker — silently losing it is the defect, and the caller can retry.
+//
+// The read is not a race: the renew's compare-and-swap is against the caller's
+// own lease token, so a claim that moved between the read and the write is
+// refused as lease_lost, which is the correct answer.
+func renewSpawnedAt(
+	ctx context.Context,
+	refs gitrest.RefClient,
+	key string,
+	requested string,
+) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	current, err := refs.ListClaimRefs(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	ref, held := exactClaim(current, key)
+	if !held {
+		return "", nil
+	}
+	return ref.SpawnedAt, nil
+}
+
 // ReleaseClaimHandler releases a claim. The token is mandatory: releasing
 // someone else's claim because you hold a stale one is the failure the
 // compare-and-swap exists to prevent.
@@ -511,6 +587,7 @@ func ReadClaimHandler(
 			LeaseUntil:  ref.LeaseUntil,
 			RenewBefore: renewBefore(ref.LeaseUntil),
 			LeaseToken:  ref.SHA,
+			SpawnedAt:   ref.SpawnedAt,
 		})
 	}
 }
@@ -622,6 +699,8 @@ type ClaimSummary struct {
 	LeaseUntil  string `json:"lease_until"`
 	RenewBefore string `json:"renew_before"`
 	LeaseToken  string `json:"lease_token"`
+	// SpawnedAt is absent on a claim whose holder has not created its Job.
+	SpawnedAt string `json:"spawned_at,omitempty"`
 }
 
 // ClaimListResponse is the body of GET /api/v1/claims.
@@ -777,6 +856,7 @@ func claimSummaries(refs []gitrest.ClaimRef, holder string) ([]ClaimSummary, int
 			LeaseUntil:  ref.LeaseUntil,
 			RenewBefore: renewBefore(ref.LeaseUntil),
 			LeaseToken:  ref.SHA,
+			SpawnedAt:   ref.SpawnedAt,
 		})
 	}
 	// Sorted by scope then id so the order is a property of the claims, not of

@@ -32,6 +32,10 @@ type ClaimRef struct {
 	Cluster    string `json:"cluster"`
 	TaskID     string `json:"task_id"`
 	LeaseUntil string `json:"lease_until"`
+	// SpawnedAt is absent on a claim whose holder has not created its Job, and on
+	// every claim written before git-rest carried the field. It is the evidence a
+	// peer uses to tell a holder that ran the task from one that only held the key.
+	SpawnedAt string `json:"spawned_at,omitempty"`
 }
 
 // ClaimRefRequest is the create/renew body. An empty ExpectedSHA means the ref
@@ -42,6 +46,9 @@ type ClaimRefRequest struct {
 	Cluster     string `json:"cluster"`
 	TaskID      string `json:"task_id"`
 	LeaseUntil  string `json:"lease_until"`
+	// SpawnedAt is written only when the holder records that it created the
+	// claim's Job. Omitting it leaves the key out of the stored payload.
+	SpawnedAt string `json:"spawned_at,omitempty"`
 }
 
 // RefClient reads and writes claim refs through git-rest. It is separate from

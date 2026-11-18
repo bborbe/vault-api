@@ -172,6 +172,19 @@ var _ = Describe("Claim handlers", func() {
 			Expect(refs.lastPut.LeaseUntil).To(Equal("2026-10-25T12:05:00Z"))
 		})
 
+		// A marker means "this holder created a Job", which cannot be true at
+		// acquisition. Dropping it here is what makes the field discriminate a
+		// post-spawn write from an acquisition-time one.
+		It("drops a spawned_at sent with an acquire", func() {
+			post(
+				"/api/v1/tasks/task-1/claim",
+				`{"holder":"nukedev","spawned_at":"2026-10-25T11:59:30Z"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(refs.lastPut.SpawnedAt).To(BeEmpty())
+			Expect(decode()).NotTo(HaveKey("spawned_at"))
+		})
+
 		It("answers 409 claim_held when another holder won the compare-and-swap", func() {
 			refs.putErr = gitrest.ErrClaimConflict
 			post("/api/v1/tasks/task-1/claim", `{"holder":"nukedev"}`)
@@ -300,6 +313,40 @@ var _ = Describe("Claim handlers", func() {
 			Expect(refs.lastPut.ExpectedSHA).To(Equal("tok"))
 		})
 
+		It("writes the spawned_at marker a renew names", func() {
+			post(
+				"/api/v1/tasks/task-1/claim/renew",
+				`{"holder":"nukedev","lease_token":"tok","spawned_at":"2026-10-25T11:59:30Z"}`,
+			)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(refs.lastPut.SpawnedAt).To(Equal("2026-10-25T11:59:30Z"))
+			Expect(decode()["spawned_at"]).To(Equal("2026-10-25T11:59:30Z"))
+		})
+
+		// The lease loop renews every 60 s and knows nothing about the marker, so a
+		// renew that dropped it would erase the only evidence that this claim's
+		// holder created a Job — within a minute of the spawn.
+		It("keeps the stored spawned_at when the renew names none", func() {
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-1",
+				SHA:        "tok",
+				Cluster:    "nukedev",
+				LeaseUntil: "2026-10-25T12:04:00Z",
+				SpawnedAt:  "2026-10-25T11:59:30Z",
+			}}
+			post("/api/v1/tasks/task-1/claim/renew", `{"holder":"nukedev","lease_token":"tok"}`)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(refs.lastPut.SpawnedAt).To(Equal("2026-10-25T11:59:30Z"))
+		})
+
+		It("fails the renew rather than silently dropping the marker", func() {
+			refs.listErr = stderrors.New("git-rest unreachable")
+			post("/api/v1/tasks/task-1/claim/renew", `{"holder":"nukedev","lease_token":"tok"}`)
+			Expect(recorder.Code).To(Equal(http.StatusInternalServerError))
+			Expect(decode()["error"]).To(Equal("claim_read_failed"))
+			Expect(refs.lastPut.Cluster).To(BeEmpty(), "no write may drop the marker")
+		})
+
 		It("answers 409 lease_lost, never claim_held, when the lease expired", func() {
 			refs.putErr = gitrest.ErrClaimConflict
 			post("/api/v1/tasks/task-1/claim/renew", `{"holder":"nukedev","lease_token":"tok"}`)
@@ -354,6 +401,33 @@ var _ = Describe("Claim handlers", func() {
 			Expect(body["holder"]).To(Equal("sun"))
 			Expect(body["lease_token"]).To(Equal("abc"))
 			Expect(body["renew_before"]).To(Equal("2026-10-25T12:04:00Z"))
+		})
+
+		It("reports the spawned_at marker when the holder recorded one", func() {
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-1",
+				SHA:        "abc",
+				Cluster:    "sun",
+				LeaseUntil: "2026-10-25T12:05:00Z",
+				SpawnedAt:  "2026-10-25T12:01:00Z",
+			}}
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/claim", nil)
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode()["spawned_at"]).To(Equal("2026-10-25T12:01:00Z"))
+		})
+
+		It("omits spawned_at on a claim whose holder never spawned", func() {
+			refs.refs = []gitrest.ClaimRef{{
+				Ref:        "refs/claims/task/task-1",
+				SHA:        "abc",
+				Cluster:    "sun",
+				LeaseUntil: "2026-10-25T12:05:00Z",
+			}}
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/claim", nil)
+			router.ServeHTTP(recorder, request.WithContext(ctx))
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(decode()).NotTo(HaveKey("spawned_at"))
 		})
 
 		It("answers 404 claim_free when nobody holds it", func() {

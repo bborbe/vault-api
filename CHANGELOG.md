@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: carry an optional `spawned_at` on the claim routes, so a peer that takes an expired claim over can tell a holder that created its Job from one that only held the key. Accepted on renew only — an acquire drops it, because a marker at acquisition would assert a Job that does not exist yet — and a renew that names none keeps the stored value, so the holder's own 60 s renewal loop cannot erase it. Surfaced on `GET /api/v1/tasks/{id}/claim`, on the write responses and on `GET /api/v1/claims`. Additive and omitted when unset, so an older reader is unaffected.
+
 ## v0.27.2
 
 - fix: **every `metrics_`-prefixed frontmatter key is accepted, so a prototype run's `## Data` and `## Result` reach their page again.** `agentPipelineFields` is a closed set, and `fieldRefusal` refuses the *whole* read-modify-write patch on the first unknown key — so each new counter the strategy-prototype agent's run record carries cost the entire delivery, not just that counter. `run_id` and `metrics_runs` were enumerated in v0.27.1 as the 2026-11-17 instance of this class; six more keys (`metrics_agent_turns`, `metrics_interaction_count`, `metrics_input_tokens`, `metrics_output_tokens`, `metrics_cache_read_tokens`, `metrics_cache_creation_tokens`) were still refused. Measured 2026-11-18 on dev vault-api v0.27.1: 240 `unknown_field` attempts in 24 h across those six keys, every one a run that completed and could not write its page. The fix is the `metrics_` **prefix** rather than six more lines, because the key list lives in `agent-task-controller` and `agent-task-executor` and a new counter there must not need a vault-api release before a verdict can be published. The namespace is narrow: a non-`metrics_` unknown key is still refused `400 unknown_field`, so the drift control both allowlists exist for survives, and the near misses (`metrics`, `metricsx_…`, `unseen_metrics_x`) are pinned by test.
