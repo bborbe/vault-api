@@ -62,7 +62,7 @@ func WatchRefresh(
 		refreshInterval = 30 * time.Second
 	}
 
-	changed := make(chan struct{}, 16)
+	changed := make(chan ops.WatchEvent, 16)
 	watchDone := startWatcher(ctx, targets, changed)
 	// Joined on every exit path, so the goroutine is never left unjoined and its
 	// error is never silently dropped.
@@ -91,7 +91,15 @@ func WatchRefresh(
 			if err != nil && !stderrors.Is(err, context.Canceled) {
 				glog.Warningf("file watcher stopped, relying on periodic resync: %v", err)
 			}
-		case <-changed:
+		case ev := <-changed:
+			// A task edit is applied to the one page, not the whole tree: a full
+			// rebuild over a 13k-page vault takes ~16s, which would blow the
+			// freshness budget. Anything else (a delete, or a goal/topic edit with no
+			// incremental path) falls through to a coalesced full rebuild.
+			if applyOneEvent(ctx, index, store, ev) {
+				index.Verify()
+				continue
+			}
 			if !waitQuiet(ctx, changed) {
 				return nil
 			}
@@ -110,19 +118,45 @@ func WatchRefresh(
 func startWatcher(
 	ctx context.Context,
 	targets []ops.WatchTarget,
-	changed chan<- struct{},
+	changed chan<- ops.WatchEvent,
 ) <-chan error {
 	done := make(chan error, 1)
 	go func() {
-		done <- ops.NewWatchOperation().Execute(ctx, targets, func(ops.WatchEvent) error {
+		done <- ops.NewWatchOperation().Execute(ctx, targets, func(ev ops.WatchEvent) error {
 			select {
-			case changed <- struct{}{}:
+			case changed <- ev:
 			default:
 			}
 			return nil
 		})
 	}()
 	return done
+}
+
+// applyOneEvent updates the index for a single task page, returning false when
+// the event needs a full rebuild (a delete, a goal/topic edit, or a page that
+// could not be read). The read is what keeps the fast path correct: the index
+// entry must reflect the file's current bytes, not the event's name alone.
+func applyOneEvent(
+	ctx context.Context,
+	index *Index,
+	store storage.PageStorage,
+	ev ops.WatchEvent,
+) bool {
+	if ev.Type != "task" || ev.Event == "deleted" {
+		return false
+	}
+	page, err := store.ReadPage(ctx, index.cfg.VaultPath, index.cfg.TasksDir, ev.Name)
+	if err != nil {
+		glog.Warningf(
+			"watch: reading %q for an incremental update failed, rebuilding: %v",
+			ev.Name,
+			err,
+		)
+		return false
+	}
+	index.UpsertTask(page)
+	return true
 }
 
 // joinWatcher waits for the watcher goroutine to return. A nil channel (the
@@ -154,7 +188,7 @@ func rebuildIndex(
 // waitQuiet blocks until no change has arrived for watchCoalesce, collapsing a
 // save's event burst into one rebuild. It returns false when ctx is cancelled
 // first, so the caller can join the watcher and exit.
-func waitQuiet(ctx context.Context, changed <-chan struct{}) bool {
+func waitQuiet(ctx context.Context, changed <-chan ops.WatchEvent) bool {
 	quiet := time.NewTimer(watchCoalesce)
 	defer quiet.Stop()
 	for {

@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 
 - fix: **the local-mode watcher goroutine is joined and its error logged instead of dropped, and `/api/v1/topics` answers an empty JSON array (not `null`) when the topic directory is absent or `TOPICS_DIR` is empty**, matching the `[]` shape every other list endpoint guarantees. `/readiness` now counts topic warnings alongside task and goal warnings. `GET /api/v1/topics` is also restricted to GET.
 
+- fix: **a local-mode edit is applied to the one changed page instead of rebuilding the whole index, so freshness stays inside the 5 s budget on a large vault.** A full `Build` over the private-personal vault's 13k pages takes ~16 s — measured 16.3 s end-to-end on the bootstrapped instance — which misses the freshness target. The watcher now routes a task create/modify to `ReadPage` + `UpsertTask` and keeps the coalesced full rebuild for deletes and goal/topic edits, where no incremental path exists. A failed page read falls back to the rebuild rather than dropping the change.
+
 ## v0.28.0
 
 - feat: carry an optional `spawned_at` on the claim routes, so a peer that takes an expired claim over can tell a holder that created its Job from one that only held the key. Accepted on renew only — an acquire drops it, because a marker at acquisition would assert a Job that does not exist yet — and a renew that names none keeps the stored value, so the holder's own 60 s renewal loop cannot erase it. Surfaced on `GET /api/v1/tasks/{id}/claim`, on the write responses and on `GET /api/v1/claims`. Additive and omitted when unset, so an older reader is unaffected.
