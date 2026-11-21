@@ -6,6 +6,7 @@ package vaultapi
 
 import (
 	"context"
+	stderrors "errors"
 	"time"
 
 	"github.com/bborbe/vault-cli/pkg/ops"
@@ -62,28 +63,14 @@ func WatchRefresh(
 	}
 
 	changed := make(chan struct{}, 16)
-	go func() {
-		// The watcher runs until ctx is cancelled; its error is a closed channel or
-		// a cancelled context, neither of which the caller can act on. A real
-		// watcher failure surfaces as a stale index, which the resync below bounds.
-		_ = ops.NewWatchOperation().Execute(ctx, targets, func(ops.WatchEvent) error {
-			select {
-			case changed <- struct{}{}:
-			default:
-			}
-			return nil
-		})
+	watchDone := startWatcher(ctx, targets, changed)
+	// Joined on every exit path, so the goroutine is never left unjoined and its
+	// error is never silently dropped.
+	defer func() {
+		if err := joinWatcher(watchDone); err != nil && !stderrors.Is(err, context.Canceled) {
+			glog.Warningf("file watcher stopped: %v", err)
+		}
 	}()
-
-	rebuild := func() {
-		if err := index.Build(ctx, store); err != nil {
-			glog.Warningf("watch index rebuild failed: %v", err)
-			return
-		}
-		if onHead != nil {
-			onHead(ResolveHead(index.cfg.VaultPath))
-		}
-	}
 
 	heartbeat := time.NewTicker(refreshInterval)
 	defer heartbeat.Stop()
@@ -96,26 +83,94 @@ func WatchRefresh(
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-changed:
-			quiet := time.NewTimer(watchCoalesce)
-		drain:
-			for {
-				select {
-				case <-changed:
-					quiet.Reset(watchCoalesce)
-				case <-quiet.C:
-					break drain
-				case <-ctx.Done():
-					quiet.Stop()
-					return nil
-				}
+		case err := <-watchDone:
+			// The watcher exited on its own (a closed event channel). Keep serving:
+			// the resync ticker still bounds staleness, just far more slowly than a
+			// live watch would. watchDone becomes nil, disabling this case.
+			watchDone = nil
+			if err != nil && !stderrors.Is(err, context.Canceled) {
+				glog.Warningf("file watcher stopped, relying on periodic resync: %v", err)
 			}
-			quiet.Stop()
-			rebuild()
+		case <-changed:
+			if !waitQuiet(ctx, changed) {
+				return nil
+			}
+			rebuildIndex(ctx, index, store, onHead)
 		case <-heartbeat.C:
 			index.Verify()
 		case <-resync.C:
-			rebuild()
+			rebuildIndex(ctx, index, store, onHead)
+		}
+	}
+}
+
+// startWatcher spawns the shared-library file watcher and returns a channel that
+// carries its exit. A change sends one signal on changed, dropping it when the
+// buffer is full so a burst cannot stall the watcher.
+func startWatcher(
+	ctx context.Context,
+	targets []ops.WatchTarget,
+	changed chan<- struct{},
+) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- ops.NewWatchOperation().Execute(ctx, targets, func(ops.WatchEvent) error {
+			select {
+			case changed <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+	}()
+	return done
+}
+
+// joinWatcher waits for the watcher goroutine to return. A nil channel (the
+// watcher already exited and was consumed) returns immediately.
+func joinWatcher(done <-chan error) error {
+	if done == nil {
+		return nil
+	}
+	return <-done
+}
+
+// rebuildIndex rebuilds the index and advances the change-event baseline. A
+// failed build leaves the previous index serving and is logged, not fatal.
+func rebuildIndex(
+	ctx context.Context,
+	index *Index,
+	store storage.PageStorage,
+	onHead func(string),
+) {
+	if err := index.Build(ctx, store); err != nil {
+		glog.Warningf("watch index rebuild failed: %v", err)
+		return
+	}
+	if onHead != nil {
+		onHead(ResolveHead(index.cfg.VaultPath))
+	}
+}
+
+// waitQuiet blocks until no change has arrived for watchCoalesce, collapsing a
+// save's event burst into one rebuild. It returns false when ctx is cancelled
+// first, so the caller can join the watcher and exit.
+func waitQuiet(ctx context.Context, changed <-chan struct{}) bool {
+	quiet := time.NewTimer(watchCoalesce)
+	defer quiet.Stop()
+	for {
+		select {
+		case <-changed:
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+			quiet.Reset(watchCoalesce)
+		case <-quiet.C:
+			return true
+		case <-ctx.Done():
+			return false
 		}
 	}
 }

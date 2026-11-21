@@ -101,7 +101,7 @@ func NewHandler(
 		HandlerFunc(handleMerge(deps))
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
-	api.Path("/topics").HandlerFunc(handleListTopics(index))
+	api.Path("/topics").Methods(http.MethodGet).HandlerFunc(handleListTopics(index))
 
 	registerClaimRoutes(api, ClaimDeps{Refs: refs, Clock: clock}, index)
 

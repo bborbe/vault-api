@@ -747,10 +747,12 @@ func (i *Index) QueryGoals() ([]GoalItem, int, int64) {
 }
 
 // QueryTopics returns every indexed topic, the warning count and the index age.
+// The slice is never nil: a vault with no topics answers an empty JSON array,
+// matching every other list endpoint, rather than null.
 func (i *Index) QueryTopics() ([]TopicItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return append([]TopicItem(nil), i.topics...), i.topicWarnings, ageSeconds(i.verifiedAt)
+	return append([]TopicItem{}, i.topics...), i.topicWarnings, ageSeconds(i.verifiedAt)
 }
 
 // buildTopics projects the topic pages. A missing topic directory is not an
@@ -761,13 +763,13 @@ func (i *Index) buildTopics(
 	pages pageindex.PageIndex,
 ) ([]TopicItem, int, error) {
 	if i.cfg.TopicsDir == "" {
-		return nil, 0, nil
+		return []TopicItem{}, 0, nil
 	}
 	dir := filepath.Join(i.cfg.VaultPath, i.cfg.TopicsDir)
 	files, err := listMarkdownFiles(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil
+			return []TopicItem{}, 0, nil
 		}
 		return nil, 0, err
 	}
@@ -855,7 +857,7 @@ func (i *Index) Readiness() Readiness {
 		Vault:           i.cfg.VaultName,
 		IndexAgeSeconds: indexAge,
 		Head:            i.head,
-		Warnings:        i.taskWarnings + i.goalWarnings,
+		Warnings:        i.taskWarnings + i.goalWarnings + i.topicWarnings,
 	}
 	if treeAge, known := FetchAge(i.cfg.VaultPath); known {
 		readiness.TreeAgeSeconds = &treeAge

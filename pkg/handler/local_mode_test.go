@@ -142,6 +142,19 @@ var _ = Describe("Local-mode read endpoints", func() {
 		Expect(decode(unknown)["error"]).To(Equal("unknown_filter"))
 	})
 
+	It("serves /api/v1/topics as an empty array when there are none", func() {
+		Expect(index.Build(ctx, store())).To(Succeed())
+
+		recorder := call("/api/v1/topics")
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		body := decode(recorder)
+		Expect(body["total"]).To(BeNumerically("==", 0))
+		items, ok := body["items"].([]any)
+		Expect(ok).To(BeTrue())
+		Expect(items).ToNot(BeNil(), "items must be [] not null")
+		Expect(items).To(BeEmpty())
+	})
+
 	It("serves /api/v1/topics", func() {
 		write(topicsDir, "Some Topic", "page_type: topic\nstatus: in_progress\n")
 		Expect(index.Build(ctx, store())).To(Succeed())

@@ -137,6 +137,21 @@ var _ = Describe("Local mode", func() {
 		Expect(topics[0].Themes).To(Equal([]string{"[[Some Theme]]"}))
 	})
 
+	It("returns an empty topic list, not null, when topics are not configured", func() {
+		noTopics := vaultapi.NewIndex(vaultapi.Config{
+			VaultPath: vaultPath,
+			VaultName: "test",
+			TasksDir:  "25 Tasks",
+			GoalsDir:  "24 Goals",
+		}, metrics)
+		Expect(noTopics.Build(ctx, store)).To(Succeed())
+
+		topics, warnings, _ := noTopics.QueryTopics()
+		Expect(topics).ToNot(BeNil(), "an absent topic set must be an empty slice, not nil")
+		Expect(topics).To(BeEmpty())
+		Expect(warnings).To(Equal(0))
+	})
+
 	It("indexes a written file with no commit and no HEAD move", func() {
 		// No .git directory at all: ResolveHead returns "", so a HEAD-gated refresh
 		// could never see the write. Visibility can only come from the watcher.
@@ -164,14 +179,16 @@ var _ = Describe("Local mode", func() {
 			Eventually(done, 5*time.Second).Should(Receive(BeNil()))
 		}()
 
-		// Let the watcher register its directories before the write.
-		time.Sleep(300 * time.Millisecond)
-		writeFile(tasksDir, "Fresh", taskFrontmatter("status: in_progress"))
-
+		// Write inside the poll rather than once after a fixed delay: the watcher
+		// registers its directories asynchronously, so a single early write could
+		// land before registration and be missed. Re-writing the same content is
+		// harmless and guarantees an event once the watch is live — and the 10s
+		// resync is outside this window, so a hit still proves the watch path.
 		Eventually(func() []vaultapi.TaskItem {
+			writeFile(tasksDir, "Fresh", taskFrontmatter("status: in_progress"))
 			items, _, _ := index.QueryTasks(vaultapi.TaskFilter{})
 			return items
-		}, 5*time.Second, 50*time.Millisecond).Should(
+		}, 5*time.Second, 200*time.Millisecond).Should(
 			ContainElement(HaveField("Title", "Fresh")),
 		)
 	})
