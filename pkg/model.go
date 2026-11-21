@@ -35,6 +35,10 @@ type TaskItem struct {
 	// filters on. It is a pointer because a page the storage layer reported no
 	// mtime for must be distinguishable from one modified at the zero instant.
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	// DeferDate is the task's frontmatter defer_date, nil when the field is
+	// absent. It is served because the `due` filter reads it and a caller checking
+	// the boundary needs the value the filter saw.
+	DeferDate *time.Time `json:"defer_date,omitempty"`
 }
 
 // IsTerminalStatus reports whether a task status ends the task's life. The vault
@@ -53,6 +57,19 @@ type GoalItem struct {
 	Title    string   `json:"title"`
 	Path     string   `json:"path"`
 	Status   string   `json:"status"`
+	Themes   []string `json:"themes"`
+	Assignee string   `json:"assignee,omitempty"`
+	Vault    string   `json:"vault"`
+}
+
+// TopicItem is the typed projection of one topic page. It is served by
+// GET /api/v1/topics.
+type TopicItem struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Path     string   `json:"path"`
+	Status   string   `json:"status"`
+	Goals    []string `json:"goals"`
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`
 	Vault    string   `json:"vault"`

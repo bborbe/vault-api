@@ -486,7 +486,11 @@ func claimWriteSpawnedAt(
 	}
 	preserved, err := renewSpawnedAt(r.Context(), deps.Refs, claimed.Key, request.SpawnedAt)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "claim_read_failed"})
+		writeJSON(
+			w,
+			http.StatusInternalServerError,
+			map[string]string{"error": "claim_read_failed"},
+		)
 		return "", false
 	}
 	return preserved, true

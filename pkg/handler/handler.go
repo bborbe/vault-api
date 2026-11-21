@@ -77,7 +77,7 @@ func NewHandler(
 	if gatewaySecret != "" {
 		api.Use(gatewaySecretMiddleware(gatewaySecret))
 	}
-	api.Path("/tasks").Methods(http.MethodGet).HandlerFunc(handleListTasks(index))
+	api.Path("/tasks").Methods(http.MethodGet).HandlerFunc(handleListTasks(index, clock))
 	api.Path("/tasks").Methods(http.MethodPost).HandlerFunc(handleCreateTask(deps))
 	api.Path("/tasks/{id}").Methods(http.MethodGet).HandlerFunc(handleGetTaskDocument(deps))
 	api.Path("/tasks/{id}").Methods(http.MethodPatch).HandlerFunc(handlePatchTask(deps))
@@ -101,6 +101,7 @@ func NewHandler(
 		HandlerFunc(handleMerge(deps))
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
+	api.Path("/topics").Methods(http.MethodGet).HandlerFunc(handleListTopics(index))
 
 	registerClaimRoutes(api, ClaimDeps{Refs: refs, Clock: clock}, index)
 
@@ -178,9 +179,11 @@ var taskListFilters = map[string]bool{
 	"task_type":     true,
 	"short_id":      true,
 	"updated_since": true,
+	"flag":          true,
+	"due":           true,
 }
 
-func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
+func handleListTasks(index *vaultapi.Index, clock libtime.CurrentDateTime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		for name := range query {
@@ -221,6 +224,14 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		flag, ok := parseBoolFilter(w, query, "flag")
+		if !ok {
+			return
+		}
+		dueNow, ok := parseDueFilter(w, query)
+		if !ok {
+			return
+		}
 		items, warnings, age := index.QueryTasks(vaultapi.TaskFilter{
 			Assignee:     query.Get("assignee"),
 			Status:       query.Get("status"),
@@ -230,6 +241,9 @@ func handleListTasks(index *vaultapi.Index) http.HandlerFunc {
 			TaskTypes:    taskTypes,
 			ShortID:      query.Get("short_id"),
 			UpdatedSince: updatedSince,
+			Flag:         flag,
+			DueNow:       dueNow,
+			Now:          time.Time(clock.Now()),
 		})
 		writeJSON(w, http.StatusOK, vaultapi.ListResponse[vaultapi.TaskItem]{
 			Items:           items,
@@ -306,6 +320,66 @@ func handleGetGoal(index *vaultapi.Index) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 	}
+}
+
+func handleListTopics(index *vaultapi.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		items, warnings, age := index.QueryTopics()
+		writeJSON(w, http.StatusOK, vaultapi.ListResponse[vaultapi.TopicItem]{
+			Items:           items,
+			Total:           len(items),
+			Warnings:        warnings,
+			IndexAgeSeconds: age,
+		})
+	}
+}
+
+// parseBoolFilter reads an optional boolean filter. An absent parameter yields
+// nil; a present one must parse as true/false, so a typo is refused rather than
+// silently widening the result to every row.
+func parseBoolFilter(
+	w http.ResponseWriter,
+	query url.Values,
+	name string,
+) (*bool, bool) {
+	raw, present := query[name]
+	if !present {
+		return nil, true
+	}
+	switch strings.ToLower(strings.TrimSpace(raw[0])) {
+	case "true":
+		value := true
+		return &value, true
+	case "false":
+		value := false
+		return &value, true
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error":  "invalid_filter",
+			"filter": name,
+			"reason": "expected true or false",
+		})
+		return nil, false
+	}
+}
+
+// parseDueFilter reads the `due` filter. Only `now` is defined: it keeps tasks
+// whose defer_date is absent or has arrived. Any other value is refused, because
+// a filter that silently disappears returns every task.
+func parseDueFilter(w http.ResponseWriter, query url.Values) (bool, bool) {
+	raw, present := query["due"]
+	if !present {
+		return false, true
+	}
+	if strings.EqualFold(strings.TrimSpace(raw[0]), "now") {
+		return true, true
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]string{
+		"error":  "invalid_filter",
+		"filter": "due",
+		"reason": "the only supported value is now",
+	})
+	return false, false
 }
 
 func gatewaySecretMiddleware(secret string) mux.MiddlewareFunc {
