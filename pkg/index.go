@@ -26,6 +26,9 @@ type Config struct {
 	VaultName string
 	TasksDir  string
 	GoalsDir  string
+	// TopicsDir is the directory the topic pages live in. Empty disables topic
+	// indexing, which is what a caller that only serves tasks and goals wants.
+	TopicsDir string
 	// StaleAfter is how long either freshness signal may go unrefreshed before
 	// Readiness stops reporting ready: the index's own verification, and the
 	// working tree's last fetch from its remote. Zero disables the rule, which is
@@ -58,6 +61,15 @@ type TaskFilter struct {
 	// UpdatedSince keeps only tasks whose page was modified at or after it. It is
 	// a pointer so "no bound" and "modified at the zero instant" stay distinct.
 	UpdatedSince *time.Time
+	// Flag, when non-nil, keeps only tasks whose frontmatter flag equals it. A
+	// pointer because "unset" and "flag: false" are different queries.
+	Flag *bool
+	// DueNow keeps only tasks due at Now: defer_date absent (nothing postpones it)
+	// or defer_date at or before Now. Now must be set when DueNow is true.
+	DueNow bool
+	// Now is the instant DueNow measures against. It is injected rather than read
+	// from the wall clock so a test can pin the boundary.
+	Now time.Time
 }
 
 // Index is the in-memory view of the vault. It is rebuilt at startup and again
@@ -67,16 +79,18 @@ type Index struct {
 	cfg     Config
 	metrics Metrics
 
-	mu           sync.RWMutex
-	tasks        []TaskItem
-	goals        []GoalItem
-	taskByID     map[string]int
-	goalByID     map[string]int
-	invalidTasks map[string]string
-	invalidGoals map[string]string
-	taskSets     taskSets
-	taskWarnings int
-	goalWarnings int
+	mu            sync.RWMutex
+	tasks         []TaskItem
+	goals         []GoalItem
+	topics        []TopicItem
+	taskByID      map[string]int
+	goalByID      map[string]int
+	invalidTasks  map[string]string
+	invalidGoals  map[string]string
+	taskSets      taskSets
+	taskWarnings  int
+	goalWarnings  int
+	topicWarnings int
 	// verifiedAt is when the index was last confirmed to match the working tree:
 	// set by a successful Build, and advanced by Verify on every refresh tick that
 	// finds the HEAD unmoved. It is the index's staleness clock, so a loop that
@@ -178,6 +192,11 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 		i.markUnbuilt()
 		return err
 	}
+	topics, topicWarnings, err := i.buildTopics(ctx, pages)
+	if err != nil {
+		i.markUnbuilt()
+		return err
+	}
 
 	i.mu.Lock()
 	if i.generation != generation {
@@ -204,6 +223,8 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	i.invalidGoals = goalInvalid
 	i.taskWarnings = taskWarnings
 	i.goalWarnings = goalWarnings
+	i.topics = topics
+	i.topicWarnings = topicWarnings
 	i.verifiedAt = time.Now()
 	i.head = ResolveHead(i.cfg.VaultPath)
 	i.built = true
@@ -515,6 +536,7 @@ func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
 		// here and one mapping site owns the coercion.
 		CurrentJob: task.GetString("current_job"),
 		PRState:    task.GetString("pr_state"),
+		DeferDate:  deferDate(task),
 	}, "", true
 }
 
@@ -625,9 +647,35 @@ func (i *Index) filterTasks(filter TaskFilter) []TaskItem {
 		if !updatedSince(i.tasks[idx], filter.UpdatedSince) {
 			continue
 		}
+		if filter.Flag != nil && i.tasks[idx].Flag != *filter.Flag {
+			continue
+		}
+		if filter.DueNow && !dueAt(i.tasks[idx], filter.Now) {
+			continue
+		}
 		items = append(items, i.tasks[idx])
 	}
 	return items
+}
+
+// dueAt reports whether a task is due at now: its defer_date is absent, or it has
+// arrived. An absent defer_date is due by definition — nothing postpones the row.
+func dueAt(item TaskItem, now time.Time) bool {
+	if item.DeferDate == nil {
+		return true
+	}
+	return !item.DeferDate.After(now)
+}
+
+// deferDate projects a task's defer_date to a *time.Time. An absent field is nil,
+// which the due filter reads as "not postponed" rather than "unknown".
+func deferDate(task *domain.Task) *time.Time {
+	d := task.DeferDate()
+	if d == nil {
+		return nil
+	}
+	t := time.Time(*d)
+	return &t
 }
 
 // unionTaskTypes returns every task whose type is any one of types. It is a union
@@ -696,6 +744,76 @@ func (i *Index) QueryGoals() ([]GoalItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return append([]GoalItem(nil), i.goals...), i.goalWarnings, ageSeconds(i.verifiedAt)
+}
+
+// QueryTopics returns every indexed topic, the warning count and the index age.
+func (i *Index) QueryTopics() ([]TopicItem, int, int64) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return append([]TopicItem(nil), i.topics...), i.topicWarnings, ageSeconds(i.verifiedAt)
+}
+
+// buildTopics projects the topic pages. A missing topic directory is not an
+// error: a vault that has none simply serves an empty list, and failing the whole
+// build over it would take the task read path down with it.
+func (i *Index) buildTopics(
+	ctx context.Context,
+	pages pageindex.PageIndex,
+) ([]TopicItem, int, error) {
+	if i.cfg.TopicsDir == "" {
+		return nil, 0, nil
+	}
+	dir := filepath.Join(i.cfg.VaultPath, i.cfg.TopicsDir)
+	files, err := listMarkdownFiles(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	listed, err := pages.ListPages(ctx, i.cfg.VaultPath, i.cfg.TopicsDir)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	readable := make(map[string]struct{}, len(listed))
+	for _, page := range listed {
+		readable[page.Name] = struct{}{}
+	}
+	warnings := 0
+	for _, name := range files {
+		if _, ok := readable[name]; !ok {
+			warnings++
+		}
+	}
+
+	topics := make([]TopicItem, 0, len(listed))
+	for _, page := range listed {
+		slug := slugify(page.Name)
+		id := page.GetString("topic_identifier")
+		if id == "" {
+			id = slug
+		}
+		goals := page.GetStringSlice("goals")
+		if goals == nil {
+			goals = []string{}
+		}
+		themes := page.GetStringSlice("themes")
+		if themes == nil {
+			themes = []string{}
+		}
+		topics = append(topics, TopicItem{
+			ID:       id,
+			Title:    page.Name,
+			Path:     relPath(i.cfg.VaultPath, page.FilePath),
+			Status:   page.GetString("status"),
+			Goals:    goals,
+			Themes:   themes,
+			Assignee: page.Assignee(),
+			Vault:    i.cfg.VaultName,
+		})
+	}
+	return topics, warnings, nil
 }
 
 // GetTask resolves one task by identifier or filename slug. found is false when

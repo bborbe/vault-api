@@ -32,7 +32,7 @@ require (
 	github.com/bborbe/k8s v1.15.1 // indirect
 	github.com/bborbe/kv v1.21.30 // indirect
 	github.com/bborbe/math v1.4.20 // indirect
-	github.com/bborbe/memorykv v1.6.28 // indirect
+	github.com/bborbe/notification v0.7.13 // indirect
 	github.com/bborbe/parse v1.12.7 // indirect
 	github.com/bborbe/strimzi v1.8.25 // indirect
 	github.com/bborbe/validation v1.5.10 // indirect
@@ -40,6 +40,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/eapache/go-resiliency v1.7.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.10.0 // indirect
 	github.com/getsentry/sentry-go v0.50.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
@@ -76,7 +77,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/exp v0.0.0-20261112173441-d10d3b464990 // indirect
 	golang.org/x/mod v0.43.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.38.0 // indirect

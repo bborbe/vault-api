@@ -52,9 +52,15 @@ type application struct {
 	InstanceStage   string           `required:"false" arg:"instance-stage"      env:"INSTANCE_STAGE"      usage:"stage of this vault-api instance, reported as the instance_stage metric label (dev, prod). Distinct from the per-task stage label."                                      default:""`
 	TasksDir        string           `required:"false" arg:"tasks-dir"           env:"TASKS_DIR"           usage:"task directory inside the vault"                                                                                                                                         default:"25 Tasks"`
 	GoalsDir        string           `required:"false" arg:"goals-dir"           env:"GOALS_DIR"           usage:"goal directory inside the vault"                                                                                                                                         default:"24 Goals"`
+	TopicsDir       string           `required:"false" arg:"topics-dir"          env:"TOPICS_DIR"          usage:"topic directory inside the vault"                                                                                                                                        default:"23 Topics"`
 	GatewaySecret   string           `required:"false" arg:"gateway-secret"      env:"GATEWAY_SECRET"      usage:"Shared secret required in X-Gateway-Secret for /api/v1/* requests. Empty = no auth."                                                                                                                                   display:"length"`
 	GitRestURL      string           `required:"false" arg:"git-rest-url"        env:"GIT_REST_URL"        usage:"base URL of the vault's git-rest service; the write endpoints post whole files here"                                                                                     default:"http://vault-obsidian-personal:9090"`
 	RefreshInterval libtime.Duration `required:"false" arg:"refresh-interval"    env:"REFRESH_INTERVAL"    usage:"how often to check the working tree for a new HEAD"                                                                                                                      default:"30s"`
+	// Watch drives the index from a filesystem watch instead of the git-HEAD
+	// check. It is the local-mode switch: on a laptop nothing commits on every
+	// edit, so a HEAD-gated refresh would lag edits by git-ai-sync's interval. In
+	// this mode a file write is indexed within a second, with no commit.
+	Watch bool `required:"false" arg:"watch"               env:"WATCH"               usage:"drive the index from a filesystem watch instead of a git-HEAD check (local mode)"                                                                                        default:"false"`
 	// StaleAfter bounds both freshness signals /readiness reports on: the index's
 	// own verification and the working tree's last fetch from its remote. It is
 	// ten times the 30s refresh interval, so it tolerates ten missed ticks before
@@ -95,6 +101,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	storageConfig := storage.DefaultConfig()
 	storageConfig.TasksDir = a.TasksDir
 	storageConfig.GoalsDir = a.GoalsDir
+	storageConfig.TopicsDir = a.TopicsDir
 	store := vaultapi.NewCountingPageStorage(storage.NewPageStorage(storageConfig), metrics)
 
 	index := vaultapi.NewIndex(vaultapi.Config{
@@ -102,6 +109,7 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		VaultName:  a.VaultName,
 		TasksDir:   a.TasksDir,
 		GoalsDir:   a.GoalsDir,
+		TopicsDir:  a.TopicsDir,
 		StaleAfter: a.StaleAfter.Duration(),
 	}, metrics)
 	if err := index.Build(ctx, store); err != nil {
@@ -256,6 +264,7 @@ func (a *application) emitterFactory(
 				VaultName: a.eventVaultName(),
 				TasksDir:  a.TasksDir,
 				GoalsDir:  a.GoalsDir,
+				TopicsDir: a.TopicsDir,
 			},
 			vaultapi.NewGitDiffer(a.VaultPath),
 			taskPublisher,
@@ -278,6 +287,9 @@ func (a *application) refresh(
 	feed vaultapi.Feed,
 	baselineStore vaultapi.BaselineStore,
 ) run.Func {
+	if a.Watch {
+		return a.watchRefresh(index, store, feed, baselineStore)
+	}
 	return func(ctx context.Context) error {
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
@@ -316,6 +328,39 @@ func (a *application) refresh(
 				persistBaseline(ctx, baselineStore, next, &savedBaseline)
 			}
 		}
+	}
+}
+
+// watchRefresh is the local-mode refresh: the filesystem watch drives rebuilds,
+// with no git-HEAD gate, so an edit is visible without a commit. The change-event
+// feed still advances on each rebuild, which keeps a local instance's baseline
+// moving even though nothing pushes to it.
+func (a *application) watchRefresh(
+	index *vaultapi.Index,
+	store storage.PageStorage,
+	feed vaultapi.Feed,
+	baselineStore vaultapi.BaselineStore,
+) run.Func {
+	return func(ctx context.Context) error {
+		savedBaseline := ""
+		onHead := func(head string) {
+			next := feed.Advance(ctx, head)
+			persistBaseline(ctx, baselineStore, next, &savedBaseline)
+		}
+		return vaultapi.WatchRefresh(
+			ctx,
+			index,
+			store,
+			vaultapi.WatchTargets(vaultapi.Config{
+				VaultPath: a.VaultPath,
+				VaultName: a.VaultName,
+				TasksDir:  a.TasksDir,
+				GoalsDir:  a.GoalsDir,
+				TopicsDir: a.TopicsDir,
+			}),
+			a.RefreshInterval.Duration(),
+			onHead,
+		)
 	}
 }
 

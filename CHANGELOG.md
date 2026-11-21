@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **a local mode (`--watch` / `WATCH=true`) drives the index from a filesystem watch instead of the git-HEAD check, so a laptop instance serves an edit within a second with no commit.** The cluster path rebuilds only when HEAD moves, which on a laptop lags every edit by git-ai-sync's interval — a row flagged or deferred a minute ago stays invisible until a commit lands. In local mode the refresh loop consumes the shared library's watcher (`vault-cli/pkg/ops.WatchOperation`, fsnotify + debounce — no forked watcher) and rebuilds the index on each debounced change, coalescing a save's event burst into one rebuild. A 10× periodic full rebuild bounds how long a missed filesystem event can leave the index stale, and the readiness heartbeat (`index.Verify`) still runs. The git-HEAD gate is bypassed only in this mode; the cluster path is unchanged. The change-event feed still advances on each rebuild, so a local instance's baseline keeps moving.
+
+- feat: **`GET /api/v1/tasks` serves `flag` and `due` filters, and `GET /api/v1/topics` serves the topic pages alongside tasks and goals.** `flag=true|false` keeps tasks whose frontmatter flag matches, and a non-nil pointer keeps "unset" distinct from `flag: false`. `due=now` keeps tasks whose `defer_date` is absent or at or before the injected clock — the boundary is inclusive and pinned by a test. Both filters are declared in the allowlist, so a misspelled or unsupported value answers `400 invalid_filter` and an unknown parameter still answers `400 unknown_filter` rather than silently widening the result to every row. `TaskItem` now carries `defer_date`. Topics are read from `TOPICS_DIR` (default `23 Topics`) through the same page index; a missing directory serves an empty list rather than failing the build.
+
 ## v0.28.0
 
 - feat: carry an optional `spawned_at` on the claim routes, so a peer that takes an expired claim over can tell a holder that created its Job from one that only held the key. Accepted on renew only — an acquire drops it, because a marker at acquisition would assert a Job that does not exist yet — and a renew that names none keeps the stored value, so the holder's own 60 s renewal loop cannot erase it. Surfaced on `GET /api/v1/tasks/{id}/claim`, on the write responses and on `GET /api/v1/claims`. Additive and omitted when unset, so an older reader is unaffected.
