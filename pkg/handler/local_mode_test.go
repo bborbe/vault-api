@@ -169,4 +169,66 @@ var _ = Describe("Local-mode read endpoints", func() {
 		Expect(ok).To(BeTrue())
 		Expect(item["title"]).To(Equal("Some Topic"))
 	})
+
+	It("serves the flag filter and the session id on /api/v1/goals", func() {
+		goalsDir := filepath.Join(vaultPath, "24 Goals")
+		write(goalsDir, "Flagged Goal", "status: in_progress\nflag: true\n"+
+			"claude_session_id: 11111111-1111-1111-1111-111111111111\n")
+		write(goalsDir, "Quiet Goal", "status: in_progress\n")
+		Expect(index.Build(ctx, store())).To(Succeed())
+
+		flagged := call("/api/v1/goals?flag=true")
+		Expect(flagged.Code).To(Equal(http.StatusOK))
+		body := decode(flagged)
+		Expect(body["total"]).To(BeNumerically("==", 1))
+		items, ok := body["items"].([]any)
+		Expect(ok).To(BeTrue())
+		item, ok := items[0].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(item["title"]).To(Equal("Flagged Goal"))
+		Expect(item["flag"]).To(Equal(true))
+		Expect(item["claude_session_id"]).
+			To(Equal("11111111-1111-1111-1111-111111111111"))
+
+		all := decode(call("/api/v1/goals"))
+		Expect(all["total"]).To(BeNumerically("==", 2))
+	})
+
+	It("serves the flag filter on /api/v1/topics and one topic by id", func() {
+		write(topicsDir, "Flagged Topic", "page_type: topic\nstatus: in_progress\nflag: true\n"+
+			"claude_session_id: 22222222-2222-2222-2222-222222222222\n")
+		write(topicsDir, "Quiet Topic", "page_type: topic\nstatus: in_progress\n")
+		Expect(index.Build(ctx, store())).To(Succeed())
+
+		flagged := decode(call("/api/v1/topics?flag=true"))
+		Expect(flagged["total"]).To(BeNumerically("==", 1))
+		items, ok := flagged["items"].([]any)
+		Expect(ok).To(BeTrue())
+		item, ok := items[0].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(item["title"]).To(Equal("Flagged Topic"))
+		Expect(item["flag"]).To(Equal(true))
+		Expect(item["claude_session_id"]).
+			To(Equal("22222222-2222-2222-2222-222222222222"))
+
+		byID := call("/api/v1/topics/" + "flagged-topic")
+		Expect(byID.Code).To(Equal(http.StatusOK))
+		Expect(decode(byID)["title"]).To(Equal("Flagged Topic"))
+
+		missing := call("/api/v1/topics/nope")
+		Expect(missing.Code).To(Equal(http.StatusNotFound))
+		Expect(decode(missing)["error"]).To(Equal("not_found"))
+	})
+
+	It("refuses an unsupported filter on the goal and topic lists", func() {
+		Expect(index.Build(ctx, store())).To(Succeed())
+
+		unknownGoal := call("/api/v1/goals?status=in_progress")
+		Expect(unknownGoal.Code).To(Equal(http.StatusBadRequest))
+		Expect(decode(unknownGoal)["error"]).To(Equal("unknown_filter"))
+
+		emptyTopic := call("/api/v1/topics?flag=")
+		Expect(emptyTopic.Code).To(Equal(http.StatusBadRequest))
+		Expect(decode(emptyTopic)["error"]).To(Equal("invalid_filter"))
+	})
 })

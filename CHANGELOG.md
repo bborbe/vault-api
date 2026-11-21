@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`GET /api/v1/goals` and `GET /api/v1/topics` serve a `flag` filter, `GoalItem`/`TopicItem` carry `flag` and `claude_session_id`, and `GET /api/v1/topics/{id}` resolves one topic.** Without these a goal's flag and its recorded manager session were invisible to every API consumer, which is why claude-wrapper's flagged tick had to parse goal pages itself; with them the tick can ask the index instead. The two list endpoints previously read no query string at all, so `?flag=true` silently returned every row — they now refuse an unsupported parameter with `400 unknown_filter` and an empty one with `400 invalid_filter`, matching `/tasks`, rather than widening a result the caller believed it had narrowed.
+
 ## v0.29.1
 
 - fix: **a local-mode edit is applied to the one changed page instead of rebuilding the whole index, so freshness stays inside the 5 s budget on a large vault.** A full `Build` over the private-personal vault's 13k pages takes ~16 s — measured 16.3 s end-to-end on the bootstrapped instance — which misses the freshness target. The watcher now routes a task create/modify to `ReadPage` + `UpsertTask` and keeps the coalesced full rebuild for deletes and goal/topic edits, where no incremental path exists. A failed page read falls back to the rebuild rather than dropping the change.

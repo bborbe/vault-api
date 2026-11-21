@@ -85,6 +85,7 @@ type Index struct {
 	topics        []TopicItem
 	taskByID      map[string]int
 	goalByID      map[string]int
+	topicByID     map[string]int
 	invalidTasks  map[string]string
 	invalidGoals  map[string]string
 	taskSets      taskSets
@@ -161,6 +162,7 @@ func NewIndex(cfg Config, metrics Metrics) *Index {
 		goals:        make([]GoalItem, 0),
 		taskByID:     map[string]int{},
 		goalByID:     map[string]int{},
+		topicByID:    map[string]int{},
 		invalidTasks: map[string]string{},
 		invalidGoals: map[string]string{},
 		taskSets:     newTaskSets(),
@@ -192,7 +194,7 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 		i.markUnbuilt()
 		return err
 	}
-	topics, topicWarnings, err := i.buildTopics(ctx, pages)
+	topics, topicWarnings, topicByID, err := i.buildTopics(ctx, pages)
 	if err != nil {
 		i.markUnbuilt()
 		return err
@@ -224,6 +226,7 @@ func (i *Index) Build(ctx context.Context, store storage.PageStorage) error {
 	i.taskWarnings = taskWarnings
 	i.goalWarnings = goalWarnings
 	i.topics = topics
+	i.topicByID = topicByID
 	i.topicWarnings = topicWarnings
 	i.verifiedAt = time.Now()
 	i.head = ResolveHead(i.cfg.VaultPath)
@@ -592,13 +595,15 @@ func (i *Index) buildGoals(
 			id = slug
 		}
 		item := GoalItem{
-			ID:       id,
-			Title:    page.Name,
-			Path:     relPath(i.cfg.VaultPath, page.FilePath),
-			Status:   rawStatus,
-			Themes:   themes,
-			Assignee: page.Assignee(),
-			Vault:    i.cfg.VaultName,
+			ID:        id,
+			Title:     page.Name,
+			Path:      relPath(i.cfg.VaultPath, page.FilePath),
+			Status:    rawStatus,
+			Themes:    themes,
+			Assignee:  page.Assignee(),
+			Vault:     i.cfg.VaultName,
+			Flag:      page.Flag(),
+			SessionID: page.ClaudeSessionID(),
 		}
 		idx := len(goals)
 		goals = append(goals, item)
@@ -761,21 +766,21 @@ func (i *Index) QueryTopics() ([]TopicItem, int, int64) {
 func (i *Index) buildTopics(
 	ctx context.Context,
 	pages pageindex.PageIndex,
-) ([]TopicItem, int, error) {
+) ([]TopicItem, int, map[string]int, error) {
 	if i.cfg.TopicsDir == "" {
-		return []TopicItem{}, 0, nil
+		return []TopicItem{}, 0, map[string]int{}, nil
 	}
 	dir := filepath.Join(i.cfg.VaultPath, i.cfg.TopicsDir)
 	files, err := listMarkdownFiles(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []TopicItem{}, 0, nil
+			return []TopicItem{}, 0, map[string]int{}, nil
 		}
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	listed, err := pages.ListPages(ctx, i.cfg.VaultPath, i.cfg.TopicsDir)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 
 	readable := make(map[string]struct{}, len(listed))
@@ -790,6 +795,7 @@ func (i *Index) buildTopics(
 	}
 
 	topics := make([]TopicItem, 0, len(listed))
+	byID := make(map[string]int, len(listed))
 	for _, page := range listed {
 		slug := slugify(page.Name)
 		id := page.GetString("topic_identifier")
@@ -805,17 +811,23 @@ func (i *Index) buildTopics(
 			themes = []string{}
 		}
 		topics = append(topics, TopicItem{
-			ID:       id,
-			Title:    page.Name,
-			Path:     relPath(i.cfg.VaultPath, page.FilePath),
-			Status:   page.GetString("status"),
-			Goals:    goals,
-			Themes:   themes,
-			Assignee: page.Assignee(),
-			Vault:    i.cfg.VaultName,
+			ID:        id,
+			Title:     page.Name,
+			Path:      relPath(i.cfg.VaultPath, page.FilePath),
+			Status:    page.GetString("status"),
+			Goals:     goals,
+			Themes:    themes,
+			Assignee:  page.Assignee(),
+			Vault:     i.cfg.VaultName,
+			Flag:      page.Flag(),
+			SessionID: page.ClaudeSessionID(),
 		})
+		idx := len(topics) - 1
+		byID[id] = idx
+		byID[page.Name] = idx
+		byID[slug] = idx
 	}
-	return topics, warnings, nil
+	return topics, warnings, byID, nil
 }
 
 // GetTask resolves one task by identifier or filename slug. found is false when
@@ -838,6 +850,18 @@ func (i *Index) GetGoal(id string) (GoalItem, bool, string) {
 		return i.goals[idx], true, ""
 	}
 	return GoalItem{}, false, i.invalidGoals[id]
+}
+
+// GetTopic resolves one topic by identifier or filename slug. There is no
+// invalid-topic map: buildTopics does not refuse a page for an unknown status the
+// way buildGoals does, so an unknown id is simply not found.
+func (i *Index) GetTopic(id string) (TopicItem, bool) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if idx, ok := i.topicByID[id]; ok {
+		return i.topics[idx], true
+	}
+	return TopicItem{}, false
 }
 
 // Readiness reports whether the index is usable and how stale it is.
