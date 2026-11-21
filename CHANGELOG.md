@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **a local-mode edit is applied to the one changed page instead of rebuilding the whole index, so freshness stays inside the 5 s budget on a large vault.** A full `Build` over the private-personal vault's 13k pages takes ~16 s — measured 16.3 s end-to-end on the bootstrapped instance — which misses the freshness target. The watcher now routes a task create/modify to `ReadPage` + `UpsertTask` and keeps the coalesced full rebuild for deletes and goal/topic edits, where no incremental path exists. A failed page read falls back to the rebuild rather than dropping the change.
+
 ## v0.29.0
 
 - feat: **a local mode (`--watch` / `WATCH=true`) drives the index from a filesystem watch instead of the git-HEAD check, so a laptop instance serves an edit within a second with no commit.** The cluster path rebuilds only when HEAD moves, which on a laptop lags every edit by git-ai-sync's interval — a row flagged or deferred a minute ago stays invisible until a commit lands. In local mode the refresh loop consumes the shared library's watcher (`vault-cli/pkg/ops.WatchOperation`, fsnotify + debounce — no forked watcher) and rebuilds the index on each debounced change, coalescing a save's event burst into one rebuild. A 10× periodic full rebuild bounds how long a missed filesystem event can leave the index stale, and the readiness heartbeat (`index.Verify`) still runs. The git-HEAD gate is bypassed only in this mode; the cluster path is unchanged. The change-event feed still advances on each rebuild, so a local instance's baseline keeps moving.
@@ -9,8 +13,6 @@ All notable changes to this project will be documented in this file.
 - feat: **`GET /api/v1/tasks` serves `flag` and `due` filters, and `GET /api/v1/topics` serves the topic pages alongside tasks and goals.** `flag=true|false` keeps tasks whose frontmatter flag matches, and a non-nil pointer keeps "unset" distinct from `flag: false`. `due=now` keeps tasks whose `defer_date` is absent or at or before the injected clock — the boundary is inclusive and pinned by a test. Both filters are declared in the allowlist, so a misspelled or unsupported value answers `400 invalid_filter` and an unknown parameter still answers `400 unknown_filter` rather than silently widening the result to every row. `TaskItem` now carries `defer_date`. Topics are read from `TOPICS_DIR` (default `23 Topics`) through the same page index; a missing directory serves an empty list rather than failing the build.
 
 - fix: **the local-mode watcher goroutine is joined and its error logged instead of dropped, and `/api/v1/topics` answers an empty JSON array (not `null`) when the topic directory is absent or `TOPICS_DIR` is empty**, matching the `[]` shape every other list endpoint guarantees. `/readiness` now counts topic warnings alongside task and goal warnings. `GET /api/v1/topics` is also restricted to GET.
-
-- fix: **a local-mode edit is applied to the one changed page instead of rebuilding the whole index, so freshness stays inside the 5 s budget on a large vault.** A full `Build` over the private-personal vault's 13k pages takes ~16 s — measured 16.3 s end-to-end on the bootstrapped instance — which misses the freshness target. The watcher now routes a task create/modify to `ReadPage` + `UpsertTask` and keeps the coalesced full rebuild for deletes and goal/topic edits, where no incremental path exists. A failed page read falls back to the rebuild rather than dropping the change.
 
 ## v0.28.0
 
