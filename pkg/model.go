@@ -60,6 +60,15 @@ type GoalItem struct {
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`
 	Vault    string   `json:"vault"`
+	// Flag is the page's frontmatter `flag:`, served so a consumer selecting the
+	// operator-flagged rows can filter server-side instead of re-reading the page.
+	// Without it a goal's flag was invisible to every API consumer, which is why
+	// the flagged tick had to parse goal pages itself.
+	Flag bool `json:"flag"`
+	// SessionID is the page's recorded `claude_session_id`, empty when none. A
+	// consumer resolving a subject's live manager needs the recorded session, and
+	// this is the only field that carries it.
+	SessionID string `json:"claude_session_id"`
 }
 
 // TopicItem is the typed projection of one topic page. It is served by
@@ -73,6 +82,11 @@ type TopicItem struct {
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`
 	Vault    string   `json:"vault"`
+	// Flag and SessionID carry the same two fields GoalItem documents, for the
+	// same reason: a topic can be flagged, and its manager's recorded session is
+	// what a consumer resolves a subject's liveness from.
+	Flag      bool   `json:"flag"`
+	SessionID string `json:"claude_session_id"`
 }
 
 // ListResponse is the envelope every list endpoint returns. Total is the number

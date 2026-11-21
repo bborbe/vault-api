@@ -102,6 +102,7 @@ func NewHandler(
 	api.Path("/goals").HandlerFunc(handleListGoals(index))
 	api.Path("/goals/{id}").HandlerFunc(handleGetGoal(index))
 	api.Path("/topics").Methods(http.MethodGet).HandlerFunc(handleListTopics(index))
+	api.Path("/topics/{id}").Methods(http.MethodGet).HandlerFunc(handleGetTopic(index))
 
 	registerClaimRoutes(api, ClaimDeps{Refs: refs, Clock: clock}, index)
 
@@ -290,12 +291,52 @@ func parseUpdatedSince(w http.ResponseWriter, raw string) (*time.Time, bool) {
 	return &parsed, true
 }
 
+// flagOnlyQuery parses the one filter the goal and topic lists honour.
+//
+// A parameter this endpoint does not implement is refused rather than ignored,
+// for the same reason /tasks refuses one: a caller that believes it narrowed a
+// result it did not is worse served than a caller told the filter does not exist.
+// Before this existed the goal and topic lists read no query at all, so
+// `?flag=true` silently returned every row — which is how the flagged tick came
+// to parse goal pages itself.
+func flagOnlyQuery(w http.ResponseWriter, r *http.Request) (*bool, bool) {
+	query := r.URL.Query()
+	for name := range query {
+		if name != "flag" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "unknown_filter",
+				"filter": name,
+			})
+			return nil, false
+		}
+		if query.Get(name) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error":  "invalid_filter",
+				"filter": name,
+				"reason": "a filter must carry a value; omit the parameter to leave it unset",
+			})
+			return nil, false
+		}
+	}
+	return parseBoolFilter(w, query, "flag")
+}
+
 func handleListGoals(index *vaultapi.Index) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		flag, ok := flagOnlyQuery(w, r)
+		if !ok {
+			return
+		}
 		items, warnings, age := index.QueryGoals()
+		filtered := make([]vaultapi.GoalItem, 0, len(items))
+		for _, item := range items {
+			if flag == nil || item.Flag == *flag {
+				filtered = append(filtered, item)
+			}
+		}
 		writeJSON(w, http.StatusOK, vaultapi.ListResponse[vaultapi.GoalItem]{
-			Items:           items,
-			Total:           len(items),
+			Items:           filtered,
+			Total:           len(filtered),
 			Warnings:        warnings,
 			IndexAgeSeconds: age,
 		})
@@ -323,14 +364,38 @@ func handleGetGoal(index *vaultapi.Index) http.HandlerFunc {
 }
 
 func handleListTopics(index *vaultapi.Index) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		flag, ok := flagOnlyQuery(w, r)
+		if !ok {
+			return
+		}
 		items, warnings, age := index.QueryTopics()
+		filtered := make([]vaultapi.TopicItem, 0, len(items))
+		for _, item := range items {
+			if flag == nil || item.Flag == *flag {
+				filtered = append(filtered, item)
+			}
+		}
 		writeJSON(w, http.StatusOK, vaultapi.ListResponse[vaultapi.TopicItem]{
-			Items:           items,
-			Total:           len(items),
+			Items:           filtered,
+			Total:           len(filtered),
 			Warnings:        warnings,
 			IndexAgeSeconds: age,
 		})
+	}
+}
+
+// handleGetTopic resolves one topic by identifier or filename slug. It exists so
+// a consumer needs no page read to resolve a topic's flag or recorded manager
+// session — the same two fields /goals/{id} now serves.
+func handleGetTopic(index *vaultapi.Index) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		item, found := index.GetTopic(mux.Vars(r)["id"])
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	}
 }
 
