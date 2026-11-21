@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.29.0
 
 - feat: **a local mode (`--watch` / `WATCH=true`) drives the index from a filesystem watch instead of the git-HEAD check, so a laptop instance serves an edit within a second with no commit.** The cluster path rebuilds only when HEAD moves, which on a laptop lags every edit by git-ai-sync's interval — a row flagged or deferred a minute ago stays invisible until a commit lands. In local mode the refresh loop consumes the shared library's watcher (`vault-cli/pkg/ops.WatchOperation`, fsnotify + debounce — no forked watcher) and rebuilds the index on each debounced change, coalescing a save's event burst into one rebuild. A 10× periodic full rebuild bounds how long a missed filesystem event can leave the index stale, and the readiness heartbeat (`index.Verify`) still runs. The git-HEAD gate is bypassed only in this mode; the cluster path is unchanged. The change-event feed still advances on each rebuild, so a local instance's baseline keeps moving.
 
