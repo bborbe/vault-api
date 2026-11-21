@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.30.0
 
 - feat: **`GET /api/v1/goals` and `GET /api/v1/topics` serve a `flag` filter, `GoalItem`/`TopicItem` carry `flag` and `claude_session_id`, and `GET /api/v1/topics/{id}` resolves one topic.** Without these a goal's flag and its recorded manager session were invisible to every API consumer, which is why claude-wrapper's flagged tick had to parse goal pages itself; with them the tick can ask the index instead. The two list endpoints previously read no query string at all, so `?flag=true` silently returned every row — they now refuse an unsupported parameter with `400 unknown_filter` and an empty one with `400 invalid_filter`, matching `/tasks`, rather than widening a result the caller believed it had narrowed.
 
