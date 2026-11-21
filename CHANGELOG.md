@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.29.1
 
 - fix: **a local-mode edit is applied to the one changed page instead of rebuilding the whole index, so freshness stays inside the 5 s budget on a large vault.** A full `Build` over the private-personal vault's 13k pages takes ~16 s — measured 16.3 s end-to-end on the bootstrapped instance — which misses the freshness target. The watcher now routes a task create/modify to `ReadPage` + `UpsertTask` and keeps the coalesced full rebuild for deletes and goal/topic edits, where no incremental path exists. A failed page read falls back to the rebuild rather than dropping the change.
 
