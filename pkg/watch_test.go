@@ -150,16 +150,18 @@ var _ = Describe("Local mode", func() {
 			GoalsDir:  "24 Goals",
 			TopicsDir: "23 Topics",
 		})
+		runCtx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() {
 			// A 1s heartbeat makes the 10s resync far outside this test's window, so
 			// a hit proves the watch path rather than the safety net.
-			done <- vaultapi.WatchRefresh(ctx, index, store, targets, time.Second, nil)
+			done <- vaultapi.WatchRefresh(runCtx, index, store, targets, time.Second, nil)
 		}()
 		defer func() {
-			// The loop returns when the test context is cancelled by Ginkgo teardown;
-			// nothing to stop explicitly beyond the deferred remove.
-			_ = done
+			// Stop the loop before the vault is removed, so the watcher does not log
+			// against deleted directories and no goroutine outlives the spec.
+			cancel()
+			Eventually(done, 5*time.Second).Should(Receive(BeNil()))
 		}()
 
 		// Let the watcher register its directories before the write.
