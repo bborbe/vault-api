@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.31.0
 
 - feat: **`GoalItem` and `TopicItem` carry `role`, `mode`, `defer_date`, `blocked_by` and `flag_set_by`, so a flagged goal or topic can be enriched from the list projection alone.** Without them a consumer that selects flagged rows had only the task rule available: it either read the page itself — which is what the index exists to prevent — or silently applied the task defaults, so a goal deferred to the future opened its manager early and a goal's own `role` was ignored. These are the same five fields a task's record endpoint already serves; goals and topics now match.
 
