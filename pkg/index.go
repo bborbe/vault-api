@@ -604,6 +604,11 @@ func (i *Index) buildGoals(
 			Vault:     i.cfg.VaultName,
 			Flag:      page.Flag(),
 			SessionID: page.ClaudeSessionID(),
+			Role:      page.GetString("role"),
+			Mode:      page.GetString("mode"),
+			DeferDate: page.GetString("defer_date"),
+			BlockedBy: page.BlockedBy(),
+			FlagSetBy: page.GetString("flag_set_by"),
 		}
 		idx := len(goals)
 		goals = append(goals, item)
@@ -821,6 +826,11 @@ func (i *Index) buildTopics(
 			Vault:     i.cfg.VaultName,
 			Flag:      page.Flag(),
 			SessionID: page.ClaudeSessionID(),
+			Role:      page.GetString("role"),
+			Mode:      page.GetString("mode"),
+			DeferDate: page.GetString("defer_date"),
+			BlockedBy: page.BlockedBy(),
+			FlagSetBy: page.GetString("flag_set_by"),
 		})
 		idx := len(topics) - 1
 		byID[id] = idx

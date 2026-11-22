@@ -69,6 +69,21 @@ type GoalItem struct {
 	// consumer resolving a subject's live manager needs the recorded session, and
 	// this is the only field that carries it.
 	SessionID string `json:"claude_session_id"`
+	// The five fields below exist so a goal or topic can be enriched from this
+	// projection alone. A consumer that selects flagged rows needs the same
+	// per-kind facts a task's frontmatter carries — role, mode, due date,
+	// unresolved blockers and flag provenance — and without them it must either
+	// read the page itself or silently apply the task rule to goals and topics.
+	// Both outcomes are wrong: the first defeats the index, the second lets a
+	// future-deferred goal open a manager early.
+	Role      string   `json:"role"`
+	Mode      string   `json:"mode"`
+	DeferDate string   `json:"defer_date,omitempty"`
+	BlockedBy []string `json:"blocked_by,omitempty"`
+	// FlagSetBy is the page's `flag_set_by`, empty when absent. Empty is a real
+	// value here — it means the page carries no provenance, which a consumer may
+	// treat as a refusal — so it is not omitted.
+	FlagSetBy string `json:"flag_set_by"`
 }
 
 // TopicItem is the typed projection of one topic page. It is served by
@@ -84,9 +99,15 @@ type TopicItem struct {
 	Vault    string   `json:"vault"`
 	// Flag and SessionID carry the same two fields GoalItem documents, for the
 	// same reason: a topic can be flagged, and its manager's recorded session is
-	// what a consumer resolves a subject's liveness from.
-	Flag      bool   `json:"flag"`
-	SessionID string `json:"claude_session_id"`
+	// what a consumer resolves a subject's liveness from. The enrichment fields
+	// are documented on GoalItem and apply identically here.
+	Flag      bool     `json:"flag"`
+	SessionID string   `json:"claude_session_id"`
+	Role      string   `json:"role"`
+	Mode      string   `json:"mode"`
+	DeferDate string   `json:"defer_date,omitempty"`
+	BlockedBy []string `json:"blocked_by,omitempty"`
+	FlagSetBy string   `json:"flag_set_by"`
 }
 
 // ListResponse is the envelope every list endpoint returns. Total is the number
