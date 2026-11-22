@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.32.0
 
 - fix: **the task PATCH allowlist is imported from `github.com/bborbe/agent` instead of kept as a copy here, so one new write-only field can no longer cost a whole result write.** `fieldRefusal` now asks `lib.TaskPatchFieldAdmitted`, the same rule `agent-task-controller` calls, and the local `typedTaskFields`, `agentPipelineFields` and `metricsFieldAdmitted` definitions are gone. The class is the one measured on 2026-11-20 19:52 on `agent-task-controller-personal-0`: a result carrying `run_claim` answered `400 unknown_field`, was retried three times, acked, and dropped, with the page left in its pre-run state. A copy per repository is what let the two drift — the controller's denylist fell one field behind the schema. `max_retries` is the one key this release newly admits (it rides a result PATCH as an operator-set value); `run_claim` stays refused, because it is a spawn-gate marker with no producer and a result write must not set it. Removing a key from the shared definition now fails `make test` naming that key.
 
