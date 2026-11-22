@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	lib "github.com/bborbe/agent"
 	"github.com/bborbe/vault-cli/pkg/domain"
 	"github.com/bborbe/vault-cli/pkg/storage"
 	"github.com/google/uuid"
@@ -71,42 +72,20 @@ const reopenTerminal = "terminal"
 // the agent pipeline's own keys are accepted too, through agentPipelineFields
 // below, and the two are kept apart deliberately (see that map's comment).
 //
+// The set is not written down here. This API and agent-task-controller both
+// import github.com/bborbe/agent, which owns the one definition — TaskTypedFields,
+// TaskPipelineFields, TaskPatchFields and the TaskPatchFieldAdmitted predicate.
+// A copy per repository is what let the two drift: the controller's denylist fell
+// one field behind the schema, so a result carrying run_claim was refused whole,
+// retried three times, acked, and dropped — measured 2026-11-20 19:52 on
+// agent-task-controller-personal-0.
+//
 // It is an allowlist rather than a denylist because the alternative — accept
 // anything the caller sends — lets a client write keys this API does not model
 // and cannot validate, which is the drift the typed surface exists to stop.
 // Approval is deliberately absent: approved_by and approved_at are written by
 // the approve endpoint alone.
-var typedTaskFields = map[string]bool{
-	"status":       true,
-	"phase":        true,
-	"assignee":     true,
-	"task_type":    true,
-	"stage":        true,
-	"cluster":      true,
-	"flag":         true,
-	"goals":        true,
-	"priority":     true,
-	"category":     true,
-	"role":         true,
-	"mode":         true,
-	"defer_date":   true,
-	"due_date":     true,
-	"target_date":  true,
-	"planned_date": true,
-	"start_date":   true,
-	"blocked_by":   true,
-	// themes is a modelled task field, not pipeline metadata: every hand-written
-	// task in every vault carries it and the vault UI renders it. It arrives on
-	// the CREATE path from every recurring template, so refusing it refused the
-	// whole instance — measured 2026-10-29, the daily recurring cadence produced
-	// zero task files that day, and the field named in the 400 was this one.
-	"themes": true,
-	// page_type is how every vault page declares what it is (`task`, `goal`,
-	// `runbook`, …). recurring-task-creator stamps it on every instance, and
-	// vault-cli reads it to decide which folder and template a record belongs
-	// to, so it is modelled rather than stored blind.
-	"page_type": true,
-}
+var typedTaskFields = lib.TaskTypedFields()
 
 // agentPipelineFields is the frontmatter the agent pipeline writes through this
 // API. It is a separate set from typedTaskFields on purpose: a key in
@@ -115,149 +94,17 @@ var typedTaskFields = map[string]bool{
 // it. Merging the two would hide that difference from the next reader and would
 // invite treating trigger_count as though this API knew what it counts.
 //
-// The set is closed, so the drift control typedTaskFields exists for still
-// holds: a key in neither map is refused with 400 unknown_field exactly as
-// before. Adding a pipeline key is a one-line change here plus a row in the
-// typed-API design, and changes nothing on the pipeline side.
+// Like typedTaskFields it is imported rather than copied: the pipeline owns this
+// key list in another repository, so a copy here would be one release behind the
+// producer. The incident history that grew the list — a spawn losing current_job
+// to an unknown last_result_status, the watchers' create keys, the metrics
+// namespace refused 240 times in 24 h — is recorded in the agent repo beside the
+// definition.
 //
-// Every entry is measured rather than guessed — each is written today by
-// agent-task-executor or agent-task-controller on a path that reaches PatchTask.
-// The pipeline's entries are enumerated from those producers' source in
-// task_content_allowlist_internal_test.go, which asserts the patch allowlist
-// covers them; a key added to one side without the other fails the build. A
-// producer that starts writing a new key is still transcribed there by hand,
-// because it lives in another repository.
-var agentPipelineFields = map[string]bool{
-	"trigger_scope":      true, // PublishSetTriggerScope
-	"trigger_count":      true, // PublishSetTriggerScope, IncrementFrontmatterCommand
-	"max_triggers":       true, // the operator's cap definition, armed on the crash class
-	"current_job":        true, // PublishSpawnNotification, cleared by PublishClearCurrentJob
-	"claude_session_id":  true, // the spawn's session anchor, written in the same update-frontmatter patch
-	"job_started_at":     true, // PublishSpawnNotification
-	"spawn_notification": true, // PublishSpawnNotification
-	"queued_at":          true, // PublishQueueEntry
-	"aborted_reason":     true, // PublishAbort
-	"gate_successor":     true, // PublishAbort
-	"target_vault":       true, // the controller's routing field, healed on write
-	"previous_assignee":  true, // trigger-cap escalation
-	"retry_count":        true, // the probe path's spawn-time bump, reset to 0 on reuse
-
-	// The run's outcome, cleared at spawn by PublishSpawnNotification so the park
-	// gate reads THIS run rather than the last one that delivered. It rides the
-	// same update-frontmatter patch as current_job and claude_session_id, and
-	// fieldRefusal refuses the whole patch on the first unknown key — measured
-	// 2026-11-12 on agent-task-controller-personal-0: the spawn of task
-	// f28ae749 wrote `unknown_field: last_result_status` and lost current_job and
-	// claude_session_id with it, which is why a probe that ran and completed
-	// carried no session anchor at all.
-	"last_result_status": true, // PublishSpawnNotification clears it; the agent delivery stamps it
-
-	// The complete-task and auto-supersede patches, both of which reach PatchTask
-	// from agent-task-controller. They were in neither allowlist, so no
-	// complete-task or supersede command could ever have succeeded:
-	// buildCompletePatch sends completed_date and processed_at unconditionally,
-	// and transitionPriorTyped sends superseded_by on every supersede. Neither
-	// path had fired on dev in the 48 hours this was measured, which is why a log
-	// sample could not find them — the outage was latent, not silent.
-	"completed_date": true, // buildCompletePatch, transitionPriorTyped
-	"processed_at":   true, // buildCompletePatch
-	"superseded_by":  true, // transitionPriorTyped (auto-supersede)
-
-	// Written by github-pr-watcher into every task it creates, and by the
-	// release watcher into every release task, so they arrive on the CREATE path
-	// and were refused there. The executor/controller entries above never covered
-	// them because those are different producers: the watchers are the only
-	// components that name the repo, the base branch and the commit a task is
-	// about, and no typed key carries any of that.
-	//
-	// ⚠️ fieldRefusal names ONE key and Go map iteration is random, so a create
-	// missing several reports a different field each attempt — measured
-	// 2026-10-28, the same outage logged `title` 9×, `clone_url` 5×, `base_ref`
-	// 5×, `ref` 4×, `repo` 1×, `current_version` 1×. Widening by the field named
-	// in one log line fixes one sixth of it; this list is the whole set.
-	"base_ref":        true, // the PR's base branch
-	"clone_url":       true, // the repo to clone
-	"ref":             true, // the commit under review / the release ref
-	"repo":            true, // owner/repo, on release tasks
-	"current_version": true, // the version a release task starts from
-	// override_reason names the mechanical rule on a pr-override. The
-	// pr-override agent posts its mechanical APPROVE only when this key reads
-	// "trivial-bot-bump" and falls back to the label body when it is absent, so
-	// refusing it here lost the whole override rather than only its metadata
-	// (measured 2026-10-29: the create 400'd, the command was consumed and
-	// dropped, and the PR was left with neither an override nor a review).
-	"override_reason": true,
-	// title is ALSO a top-level create field that owns the filename. The
-	// pipeline sends it in the frontmatter as well, and refusing that copy
-	// refused the whole create. It is stored here, not interpreted: the filename
-	// still comes from the request's own title, so the two cannot drift apart
-	// through this key.
-	"title": true,
-	// Written by recurring-task-creator on every instance it materializes, and
-	// by the sentry-analyzer producer on the tasks it files. All three arrive on
-	// the CREATE path from a template, and `fieldRefusal` names one key while Go
-	// map iteration is random — so a create carrying several of these reported a
-	// different field each attempt and looked like three separate bugs. Measured
-	// 2026-10-29 on prod: `themes` ×2, `created_by` ×1, `date` ×1, each refusing
-	// a whole recurring instance whose body was then discarded with it.
-	"created_by":       true, // recurring-task-creator, sentry producers
-	"auto_abort_prior": true, // recurring-task-creator's supersede flag
-	"date":             true, // the sentry producers' event date
-	"launcher":         true, // recurring-task-creator, on 9 of the prod templates
-
-	// Written by the watchers' own CreateCommand frontmatter. Each key names the
-	// builder that sets it; the watchers are the only producers that know the
-	// repo, branch, commit or release a task is about, and no typed key carries
-	// any of that. Enumerated from those builders rather than from a log sample:
-	// `fieldRefusal` names one key per attempt and Go map iteration is random,
-	// so a log reports a different key each time and cannot enumerate the set.
-	"branch":            true, // github-dark-factory-watcher buildFrontmatter
-	"pr_number":         true, // github-dark-factory-watcher buildFrontmatter
-	"current_go":        true, // github-update-go-watcher buildFrontmatter
-	"latest_go":         true, // github-update-go-watcher buildFrontmatter
-	"episode_sha":       true, // github-build-watcher buildCreateTaskCommand
-	"vuln_count":        true, // github-vuln-watcher buildFrontmatter
-	"vulns":             true, // github-vuln-watcher buildFrontmatter
-	"short_id":          true, // sentry-watcher buildFrontmatter
-	"project":           true, // sentry-watcher buildFrontmatter
-	"issue_url":         true, // sentry-watcher buildFrontmatter
-	"new_version":       true, // go-version-watcher buildFrontmatter
-	"previous_version":  true, // go-version-watcher buildFrontmatter
-	"release_kind":      true, // go-version-watcher buildFrontmatter
-	"release_notes_url": true, // go-version-watcher buildFrontmatter
-	// recovery_sha rides the COMPLETE-TASK patch, not a create: the controller
-	// sets patch["recovery_sha"] in task_complete_task_executor.go. It belongs
-	// here because createFields unions patchFields — there is no second list.
-	"recovery_sha": true, // agent-task-controller complete-task patch
-	// run_outcome and failure_reason ride the COMPLETE-TASK patch from
-	// bborbe/github-pr-review-agent: stampRunOutcome writes them on every
-	// terminal routing (post_failed / no_review / budget_expired), so they
-	// arrive on any run that ends without posting a review.
-	//
-	// Refusing them failed the whole read-modify-write, not just the metadata —
-	// measured 2026-11-17 on the dev stage, agent v0.18.2, task f88cced8:
-	// `patch attempt 3 of 3 failed … 400 unknown_field field=run_outcome`, and
-	// the record kept its pre-run state with no ## Diagnostics block. The prod
-	// stage writes to a vault whose writer already accepts them, which is why
-	// this only surfaced on dev.
-	"run_outcome":    true, // github-pr-review-agent stampRunOutcome
-	"failure_reason": true, // github-pr-review-agent stampRunOutcome
-
-	// The strategy-prototype agent's own run record, written on the delivery
-	// that carries its ## Result and ## Ledger. run_id is the agent's publish
-	// step's guard against running one idea twice; metrics_runs is the
-	// controller's transcription of the run's per-variant metrics. Neither was
-	// in this set, so the whole result delivery was refused and the page kept
-	// its pre-run state.
-	//
-	// Measured 2026-11-17 on the dev stage: three prototype runs each ended
-	// `status: completed` / `phase: done` with NO ## Result and NO ## Ledger —
-	// `patch attempt 1 of 3 failed … 400 unknown_field field=run_id`, then
-	// `field=metrics_runs`. The frontmatter transition landed and the body was
-	// dropped with it, so the run's verdict reached its page not at all.
-	"run_id":       true, // the strategy-prototype agent's publish step, carried by the controller's patch
-	"metrics_runs": true, // the controller's result writer, transcribed from the run's metrics
-}
+// max_retries is the one key this API did not already accept: it rides a result
+// PATCH as an operator-set value, and refusing it refused the whole
+// read-modify-write.
+var agentPipelineFields = lib.TaskPipelineFields()
 
 // unionFields returns a fresh map holding every key of the given sets.
 func unionFields(sets ...map[string]bool) map[string]bool {
@@ -547,32 +394,13 @@ func handleReaddressTask(deps writeDeps) http.HandlerFunc {
 	}
 }
 
-// metricsFieldPrefix admits the strategy-prototype agent's run-record namespace
-// as a prefix rather than as enumerated keys.
-//
-// The two sets above stay closed, and every other unknown key still answers 400
-// unknown_field. This one namespace is prefix-matched because its key list is
-// not this API's to freeze: the executor's per-run token budget and the
-// controller's accumulatedCounters both live in another repository, and a new
-// metrics_ key there must not require a vault-api release before the agent can
-// publish a verdict. A closed list refuses the WHOLE read-modify-write patch on
-// the first unknown key, so one new counter costs the entire ## Data and
-// ## Result, not just that counter.
-//
-// Measured 2026-11-18 on dev vault-api v0.27.1: six metrics_ keys refused,
-// 240 attempts in 24 h, every one of them a successful prototype run that could
-// not write its page. run_id and metrics_runs were already enumerated (they were
-// the 2026-11-17 instance of this same class); the next key was the next
-// outage, which is why the fix is the prefix and not six more lines.
-//
-// The namespace is narrow on purpose: only "metrics_" prefixed keys bypass the
-// closed sets. A non-metrics_ unknown key is still refused, so the drift control
-// the two allowlists exist for survives.
-const metricsFieldPrefix = "metrics_"
-
-func metricsFieldAdmitted(key string) bool {
-	return strings.HasPrefix(key, metricsFieldPrefix)
-}
+// The metrics_ namespace is not defined here either. lib.TaskPatchFieldAdmitted
+// is the whole rule — the two enumerated sets plus the metrics_ prefix that
+// admits the strategy-prototype agent's run-record keys without an API release
+// (measured 2026-11-18 on dev: six metrics_ keys refused, 240 attempts in 24 h,
+// every one a successful run that could not write its page). Importing it is
+// what keeps this API and the task controller from disagreeing about which keys
+// a write may name.
 
 // fieldRefusal answers the request itself when a named field may not be written
 // through this route, and returns "" when every field is allowed. Both write
@@ -589,7 +417,7 @@ func fieldRefusal(
 			writeRefusalError(w, rules.RefuseApprovalRecordWrite(), path)
 			return "approval"
 		}
-		if !allowed[key] && !metricsFieldAdmitted(key) {
+		if !allowed[key] && !lib.TaskPatchFieldAdmitted(key) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "unknown_field",
 				"field": key,

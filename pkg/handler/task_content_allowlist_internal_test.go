@@ -7,6 +7,7 @@ package handler
 import (
 	"sort"
 
+	lib "github.com/bborbe/agent"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -85,18 +86,22 @@ var controllerEmittedFrontmatterKeys = []string{
 // account for every key; their own pinning test lives in the external package
 // (task_content_test.go), which exercises each one through a real PATCH.
 var otherProducerFields = map[string]bool{
-	"auto_abort_prior":  true, // recurring-task-creator's supersede flag
-	"base_ref":          true, // github-pr-watcher
-	"branch":            true, // github-dark-factory-watcher
-	"clone_url":         true, // github-pr-watcher
-	"current_go":        true, // github-update-go-watcher
-	"current_version":   true, // the release watcher
-	"date":              true, // the sentry producers
-	"episode_sha":       true, // github-build-watcher
-	"failure_reason":    true, // github-pr-review-agent stampRunOutcome
-	"issue_url":         true, // sentry-watcher
-	"latest_go":         true, // github-update-go-watcher
-	"launcher":          true, // recurring-task-creator
+	"auto_abort_prior": true, // recurring-task-creator's supersede flag
+	"base_ref":         true, // github-pr-watcher
+	"branch":           true, // github-dark-factory-watcher
+	"clone_url":        true, // github-pr-watcher
+	"current_go":       true, // github-update-go-watcher
+	"current_version":  true, // the release watcher
+	"date":             true, // the sentry producers
+	"episode_sha":      true, // github-build-watcher
+	"failure_reason":   true, // github-pr-review-agent stampRunOutcome
+	"issue_url":        true, // sentry-watcher
+	"latest_go":        true, // github-update-go-watcher
+	"launcher":         true, // recurring-task-creator
+	// max_retries is carried, not written, by the controller's result writer: a
+	// result PATCH is a read-modify-write, so the operator-set value rides along
+	// in the payload and refusing it refused the whole write.
+	"max_retries":       true,
 	"new_version":       true, // go-version-watcher
 	"override_reason":   true, // the pr-override agent
 	"pr_number":         true, // github-dark-factory-watcher
@@ -120,9 +125,9 @@ var _ = Describe("agent pipeline frontmatter allowlist", func() {
 		for _, key := range controllerEmittedFrontmatterKeys {
 			Expect(seen).NotTo(HaveKey(key), "listed twice: %s", key)
 			seen[key] = true
-			Expect(patchFields).To(
-				HaveKey(key),
-				"the controller/executor write %q but patchFields refuses it: "+
+			Expect(lib.TaskPatchFieldAdmitted(key)).To(
+				BeTrue(),
+				"the controller/executor write %q but the task PATCH rule refuses it: "+
 					"every patch carrying it answers 400 unknown_field and is dropped whole",
 				key,
 			)
@@ -138,9 +143,9 @@ var _ = Describe("agent pipeline frontmatter allowlist", func() {
 			attributed[key] = true
 			// A key attributed only here must still be writable: otherwise the
 			// attribution silences the check above while the key answers 400.
-			Expect(patchFields).To(
-				HaveKey(key),
-				"otherProducerFields records %q but patchFields refuses it",
+			Expect(lib.TaskPatchFieldAdmitted(key)).To(
+				BeTrue(),
+				"otherProducerFields records %q but the task PATCH rule refuses it",
 				key,
 			)
 		}
