@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **the task PATCH allowlist is imported from `github.com/bborbe/agent` instead of kept as a copy here, so one new write-only field can no longer cost a whole result write.** `fieldRefusal` now asks `lib.TaskPatchFieldAdmitted`, the same rule `agent-task-controller` calls, and the local `typedTaskFields`, `agentPipelineFields` and `metricsFieldAdmitted` definitions are gone. The class is the one measured on 2026-11-20 19:52 on `agent-task-controller-personal-0`: a result carrying `run_claim` answered `400 unknown_field`, was retried three times, acked, and dropped, with the page left in its pre-run state. A copy per repository is what let the two drift — the controller's denylist fell one field behind the schema. `max_retries` is the one key this release newly admits (it rides a result PATCH as an operator-set value); `run_claim` stays refused, because it is a spawn-gate marker with no producer and a result write must not set it. Removing a key from the shared definition now fails `make test` naming that key.
+
 ## v0.31.0
 
 - feat: **`GoalItem` and `TopicItem` carry `role`, `mode`, `defer_date`, `blocked_by` and `flag_set_by`, so a flagged goal or topic can be enriched from the list projection alone.** Without them a consumer that selects flagged rows had only the task rule available: it either read the page itself — which is what the index exists to prevent — or silently applied the task defaults, so a goal deferred to the future opened its manager early and a goal's own `role` was ignored. These are the same five fields a task's record endpoint already serves; goals and topics now match.
