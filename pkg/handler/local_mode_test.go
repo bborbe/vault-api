@@ -170,6 +170,34 @@ var _ = Describe("Local-mode read endpoints", func() {
 		Expect(item["title"]).To(Equal("Some Topic"))
 	})
 
+	It("serves the enrichment fields on /api/v1/goals", func() {
+		goalsDir := filepath.Join(vaultPath, "24 Goals")
+		write(goalsDir, "Flagged Goal", "status: in_progress\nflag: true\n"+
+			"claude_session_id: 11111111-1111-1111-1111-111111111111\n"+
+			"role: manager\nmode: headless\ndefer_date: \"2999-01-01\"\n"+
+			"flag_set_by: operator\nblocked_by:\n  - '[[Some Blocker]]'\n")
+		write(goalsDir, "Quiet Goal", "status: in_progress\n")
+
+		Expect(index.Build(ctx, store())).To(Succeed())
+
+		flagged := call("/api/v1/goals?flag=true")
+		Expect(flagged.Code).To(Equal(http.StatusOK))
+		body := decode(flagged)
+		items, ok := body["items"].([]any)
+		Expect(ok).To(BeTrue())
+		item, ok := items[0].(map[string]any)
+		Expect(ok).To(BeTrue())
+		// A goal's due date, role, blockers and provenance must be readable from
+		// this projection: a consumer that cannot see them either re-reads the page
+		// or applies the task rule to a goal, and a future-deferred goal then opens
+		// its manager early.
+		Expect(item["role"]).To(Equal("manager"))
+		Expect(item["mode"]).To(Equal("headless"))
+		Expect(item["defer_date"]).To(Equal("2999-01-01"))
+		Expect(item["flag_set_by"]).To(Equal("operator"))
+		Expect(item["blocked_by"]).To(ConsistOf("[[Some Blocker]]"))
+	})
+
 	It("serves the flag filter and the session id on /api/v1/goals", func() {
 		goalsDir := filepath.Join(vaultPath, "24 Goals")
 		write(goalsDir, "Flagged Goal", "status: in_progress\nflag: true\n"+

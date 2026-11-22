@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`GoalItem` and `TopicItem` carry `role`, `mode`, `defer_date`, `blocked_by` and `flag_set_by`, so a flagged goal or topic can be enriched from the list projection alone.** Without them a consumer that selects flagged rows had only the task rule available: it either read the page itself — which is what the index exists to prevent — or silently applied the task defaults, so a goal deferred to the future opened its manager early and a goal's own `role` was ignored. These are the same five fields a task's record endpoint already serves; goals and topics now match.
+
 ## v0.30.0
 
 - feat: **`GET /api/v1/goals` and `GET /api/v1/topics` serve a `flag` filter, `GoalItem`/`TopicItem` carry `flag` and `claude_session_id`, and `GET /api/v1/topics/{id}` resolves one topic.** Without these a goal's flag and its recorded manager session were invisible to every API consumer, which is why claude-wrapper's flagged tick had to parse goal pages itself; with them the tick can ask the index instead. The two list endpoints previously read no query string at all, so `?flag=true` silently returned every row — they now refuse an unsupported parameter with `400 unknown_filter` and an empty one with `400 invalid_filter`, matching `/tasks`, rather than widening a result the caller believed it had narrowed.
