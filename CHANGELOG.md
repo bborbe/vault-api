@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.34.1
 
 - fix: bump `github.com/bborbe/agent` so the task-frontmatter allowlist admits `created`. Since v0.34.0 the create/patch allowlist is `lib.TaskTypedFields()` ∪ `lib.TaskPipelineFields()`, and `created` was in neither — so `recurring-task-creator`'s AI Knowledge Sharing template, which stamps `created: "{{current_date}}"` for vault-cli's closure gate, had every create refused `400 unknown_field field=created` and dropped whole. Measured 2026-11-22/23 on `agent-task-controller-seibert-personal-0`; the weekly instance never materialized. The pinning test now exercises the key through a real PATCH.
 
