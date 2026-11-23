@@ -606,7 +606,7 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 			})
 			return
 		}
-		indexCreatedTask(deps, path, frontmatter, rendered)
+		indexCreatedTask(ctx, deps, path, frontmatter, rendered)
 		writeJSON(w, http.StatusCreated, TaskDocument{
 			ID:          fmt.Sprint(frontmatter["task_identifier"]),
 			Title:       title,
@@ -683,13 +683,14 @@ func answerOccupiedPath(
 // got a 404 for a task that existed. Measured on dev 2026-11-09: the update ran
 // 4 ms after the create and was dropped with "task not found".
 func indexCreatedTask(
+	ctx context.Context,
 	deps writeDeps,
 	path string,
 	frontmatter map[string]any,
 	rendered string,
 ) {
 	modified := deps.clock.Now().Time()
-	deps.index.UpsertTask(domain.NewPage(
+	deps.index.UpsertTask(ctx, domain.NewPage(
 		frontmatter,
 		domain.FileMetadata{
 			Name:         strings.TrimSuffix(filepath.Base(path), ".md"),
@@ -843,7 +844,7 @@ func reopenTerminalTask(
 		})
 		return
 	}
-	indexCreatedTask(deps, path, frontmatter, rendered)
+	indexCreatedTask(ctx, deps, path, frontmatter, rendered)
 	writeJSON(w, http.StatusOK, TaskDocument{
 		ID:          fmt.Sprint(frontmatter["task_identifier"]),
 		Title:       strings.TrimSpace(request.Title),

@@ -121,6 +121,72 @@ var _ = Describe("Local-mode read endpoints", func() {
 		Expect(flaggedOnly["total"]).To(BeNumerically("==", 2))
 	})
 
+	It("serves the fields the board renders on every task-list row", func() {
+		// Every field here is one the board's own task response carries, so a
+		// consumer serving the board from this list needs no per-row detail call.
+		boardTask := "---\n" +
+			"status: in_progress\n" +
+			"priority: 1\n" +
+			"blocked_by:\n" +
+			"    - '[[Blocker]]'\n" +
+			"due_date: \"2026-12-01\"\n" +
+			"planned_date: \"2026-11-24\"\n" +
+			"claude_session_id: 78027d5c-e97e-466d-a653-38b3d644ee18\n" +
+			"jira: BRO-123\n" +
+			"mode: local\n" +
+			"---\n\n" +
+			"## Open Questions\n\n" +
+			"1. Which vault?\n"
+		Expect(os.WriteFile(
+			filepath.Join(tasksDir, "Board Fields.md"), []byte(boardTask), 0o600,
+		)).To(Succeed())
+		write(tasksDir, "Bare", "status: in_progress\n")
+		Expect(index.Build(ctx, store())).To(Succeed())
+
+		body := decode(call("/api/v1/tasks?status=in_progress"))
+		items, ok := body["items"].([]any)
+		Expect(ok).To(BeTrue())
+		Expect(items).To(HaveLen(2))
+
+		byTitle := map[string]map[string]any{}
+		for _, raw := range items {
+			item, ok := raw.(map[string]any)
+			Expect(ok).To(BeTrue())
+			title, ok := item["title"].(string)
+			Expect(ok).To(BeTrue())
+			byTitle[title] = item
+		}
+
+		board := byTitle["Board Fields"]
+		Expect(board["blocked_by"]).To(Equal([]any{"[[Blocker]]"}))
+		Expect(board["priority"]).To(BeNumerically("==", 1))
+		Expect(board["due_date"]).To(Equal("2026-12-01"))
+		Expect(board["planned_date"]).To(Equal("2026-11-24"))
+		Expect(board["claude_session_id"]).
+			To(Equal("78027d5c-e97e-466d-a653-38b3d644ee18"))
+		Expect(board["jira"]).To(Equal("BRO-123"))
+		Expect(board["mode"]).To(Equal("local"))
+		Expect(board["open_questions"]).To(Equal([]any{
+			map[string]any{"index": float64(1), "text": "Which vault?"},
+		}))
+
+		// A row carrying none of the optional values still serialises every key, and
+		// the two lists are [] rather than null — a consumer must never have to tell
+		// "absent" from "empty".
+		bare := byTitle["Bare"]
+		for _, key := range []string{
+			"blocked_by", "priority", "due_date", "planned_date",
+			"claude_session_id", "jira", "mode", "open_questions",
+		} {
+			Expect(bare).To(HaveKey(key))
+		}
+		Expect(bare["blocked_by"]).To(Equal([]any{}))
+		Expect(bare["open_questions"]).To(Equal([]any{}))
+		Expect(bare["priority"]).To(BeNumerically("==", 0))
+		Expect(bare["due_date"]).To(BeNil())
+		Expect(bare["claude_session_id"]).To(BeNil())
+	})
+
 	It("refuses a malformed flag or due value instead of widening the result", func() {
 		write(tasksDir, "Alpha", "status: in_progress\nflag: true\n")
 		Expect(index.Build(ctx, store())).To(Succeed())
