@@ -122,6 +122,7 @@ var _ = Describe("Local mode", func() {
 		writeFile(topicsDir, "Some Topic", taskFrontmatter(
 			"page_type: topic",
 			"status: in_progress",
+			"phase: execution",
 			"goals:\n    - '[[Some Goal]]'",
 			"themes:\n    - '[[Some Theme]]'",
 		))
@@ -133,6 +134,7 @@ var _ = Describe("Local mode", func() {
 		Expect(topics[0].Title).To(Equal("Some Topic"))
 		Expect(topics[0].Path).To(Equal("23 Topics/Some Topic.md"))
 		Expect(topics[0].Status).To(Equal("in_progress"))
+		Expect(topics[0].Phase).To(Equal("execution"))
 		Expect(topics[0].Goals).To(Equal([]string{"[[Some Goal]]"}))
 		Expect(topics[0].Themes).To(Equal([]string{"[[Some Theme]]"}))
 	})

@@ -94,6 +94,13 @@ type GoalItem struct {
 	Title    string   `json:"title"`
 	Path     string   `json:"path"`
 	Status   string   `json:"status"`
+	// Phase is the page's frontmatter `phase:`, carried raw. Goals and topics
+	// keep their own phase convention (GoalFrontmatter.Phase preserves legacy
+	// and hand-typed values rather than normalising them), and the board's
+	// displayPhase maps `in_progress` onto the `execution` column client-side.
+	// It is served because the board groups goals and topics into phase columns
+	// exactly as it groups tasks: without it every card lands in the "—" column.
+	Phase    string   `json:"phase"`
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`
 	Vault    string   `json:"vault"`
@@ -130,6 +137,8 @@ type TopicItem struct {
 	Title    string   `json:"title"`
 	Path     string   `json:"path"`
 	Status   string   `json:"status"`
+	// Phase is the topic's own `phase:` on the same terms as GoalItem.Phase.
+	Phase    string   `json:"phase"`
 	Goals    []string `json:"goals"`
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`

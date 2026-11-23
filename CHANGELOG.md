@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`GET /api/v1/goals` and `/api/v1/topics` carry `phase`, so the board can group goal and topic cards into phase columns like tasks.** `GoalItem` and `TopicItem` were written for the flagged-row consumer and never carried the page's `phase:`; the board groups cards by `item.phase`, so every goal and topic landed in the `—` column and the six phase columns stayed empty. Measured 2026-11-23 against the live `:9091`: `/api/v1/goals` returned 511 items and `/api/v1/topics` 30, none with a `phase` key, while all 421 `24 Goals/*.md` and 23 `23 Topics/*.md` declare one. The field is carried raw, matching the goal/topic convention (`GoalFrontmatter.Phase` preserves legacy and hand-typed values), and the board maps `in_progress` onto the `execution` column client-side.
+
 ## v0.34.1
 
 - fix: bump `github.com/bborbe/agent` so the task-frontmatter allowlist admits `created`. Since v0.34.0 the create/patch allowlist is `lib.TaskTypedFields()` ∪ `lib.TaskPipelineFields()`, and `created` was in neither — so `recurring-task-creator`'s AI Knowledge Sharing template, which stamps `created: "{{current_date}}"` for vault-cli's closure gate, had every create refused `400 unknown_field field=created` and dropped whole. Measured 2026-11-22/23 on `agent-task-controller-seibert-personal-0`; the weekly instance never materialized. The pinning test now exercises the key through a real PATCH.
