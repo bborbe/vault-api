@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.35.0
 
 - feat: **`GET /api/v1/tasks` carries `task_identifier_previous`.** `TaskItem` projected the current identifier (`ID`) but not the predecessor a re-addressed page records, so a consumer holding only the listing could answer "which file carries this identifier" for the current key and never for the alias. The field is projected from frontmatter like the other board fields and is empty when the page was never re-addressed — an absent predecessor stays distinguishable from an empty one only in that both mean "no alias".
 
