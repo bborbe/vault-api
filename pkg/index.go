@@ -683,39 +683,174 @@ func (i *Index) buildGoals(
 				continue
 			}
 		}
-		themes := page.GetStringSlice("themes")
-		if themes == nil {
-			themes = []string{}
-		}
-		id := page.GetString("goal_identifier")
-		if id == "" {
-			id = slug
-		}
-		item := GoalItem{
-			ID:        id,
-			Title:     page.Name,
-			Path:      relPath(i.cfg.VaultPath, page.FilePath),
-			Status:    rawStatus,
-			Phase:     page.GetString("phase"),
-			Themes:    themes,
-			Assignee:  page.Assignee(),
-			Vault:     i.cfg.VaultName,
-			Flag:      page.Flag(),
-			SessionID: page.ClaudeSessionID(),
-			Role:      page.GetString("role"),
-			Mode:      page.GetString("mode"),
-			DeferDate: page.GetString("defer_date"),
-			BlockedBy: page.BlockedBy(),
-			FlagSetBy: page.GetString("flag_set_by"),
-		}
+		item := i.goalItem(page)
 		idx := len(goals)
 		goals = append(goals, item)
-		byID[id] = idx
-		byID[page.Name] = idx
-		byID[slug] = idx
+		registerGoalKeys(byID, item, idx)
 	}
 
 	return goals, invalid, warnings, byID, nil
+}
+
+// goalItem projects one goal page. Build and UpsertGoal share it so an upserted
+// goal describes a page exactly as a built one does.
+func (i *Index) goalItem(page *domain.Page) GoalItem {
+	themes := page.GetStringSlice("themes")
+	if themes == nil {
+		themes = []string{}
+	}
+	id := page.GetString("goal_identifier")
+	if id == "" {
+		id = slugify(page.Name)
+	}
+	return GoalItem{
+		ID:        id,
+		Title:     page.Name,
+		Path:      relPath(i.cfg.VaultPath, page.FilePath),
+		Status:    page.GetString("status"),
+		Phase:     page.GetString("phase"),
+		Themes:    themes,
+		Assignee:  page.Assignee(),
+		Vault:     i.cfg.VaultName,
+		Flag:      page.Flag(),
+		SessionID: page.ClaudeSessionID(),
+		Role:      page.GetString("role"),
+		Mode:      page.GetString("mode"),
+		DeferDate: page.GetString("defer_date"),
+		BlockedBy: page.BlockedBy(),
+		FlagSetBy: page.GetString("flag_set_by"),
+	}
+}
+
+func registerGoalKeys(byID map[string]int, item GoalItem, idx int) {
+	byID[item.ID] = idx
+	byID[item.Title] = idx
+	byID[slugify(item.Title)] = idx
+}
+
+// topicItem projects one topic page; shared by Build and UpsertTopic.
+func (i *Index) topicItem(page *domain.Page) TopicItem {
+	id := page.GetString("topic_identifier")
+	if id == "" {
+		id = slugify(page.Name)
+	}
+	goals := page.GetStringSlice("goals")
+	if goals == nil {
+		goals = []string{}
+	}
+	themes := page.GetStringSlice("themes")
+	if themes == nil {
+		themes = []string{}
+	}
+	return TopicItem{
+		ID:        id,
+		Title:     page.Name,
+		Path:      relPath(i.cfg.VaultPath, page.FilePath),
+		Status:    page.GetString("status"),
+		Phase:     page.GetString("phase"),
+		Goals:     goals,
+		Themes:    themes,
+		Assignee:  page.Assignee(),
+		Vault:     i.cfg.VaultName,
+		Flag:      page.Flag(),
+		SessionID: page.ClaudeSessionID(),
+		Role:      page.GetString("role"),
+		Mode:      page.GetString("mode"),
+		DeferDate: page.GetString("defer_date"),
+		BlockedBy: page.BlockedBy(),
+		FlagSetBy: page.GetString("flag_set_by"),
+	}
+}
+
+func registerTopicKeys(byID map[string]int, item TopicItem, idx int) {
+	byID[item.ID] = idx
+	byID[item.Title] = idx
+	byID[slugify(item.Title)] = idx
+}
+
+// UpsertGoal applies one edited goal page in place, replacing the entry at the
+// same Path or appending. It spares a full Build for a goal flag/unflag. A page
+// the full build would reject (unknown status) is not indexed: its entry is
+// dropped and recorded invalid, as Build would.
+func (i *Index) UpsertGoal(ctx context.Context, page *domain.Page) {
+	item := i.goalItem(page)
+	rejected := false
+	if item.Status != "" {
+		rejected = domain.GoalStatus(item.Status).Validate(ctx) != nil
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	goals := make([]GoalItem, 0, len(i.goals)+1)
+	replaced := false
+	for _, existing := range i.goals {
+		if existing.Path == item.Path {
+			replaced = true
+			if !rejected {
+				goals = append(goals, item)
+			}
+			continue
+		}
+		goals = append(goals, existing)
+	}
+	if !replaced && !rejected {
+		goals = append(goals, item)
+	}
+	byID := make(map[string]int, len(goals)*3)
+	for idx, goal := range goals {
+		registerGoalKeys(byID, goal, idx)
+	}
+	invalid := make(map[string]string, len(i.invalidGoals)+2)
+	for key, reason := range i.invalidGoals {
+		invalid[key] = reason
+	}
+	slug := slugify(page.Name)
+	_, wasInvalid := invalid[page.Name]
+	if rejected {
+		reason := "unknown status " + item.Status
+		invalid[slug] = reason
+		invalid[page.Name] = reason
+		if !wasInvalid {
+			i.goalWarnings++
+		}
+	} else if wasInvalid {
+		delete(invalid, slug)
+		delete(invalid, page.Name)
+		if i.goalWarnings > 0 {
+			i.goalWarnings--
+		}
+	}
+	i.generation++
+	i.goals = goals
+	i.goalByID = byID
+	i.invalidGoals = invalid
+}
+
+// UpsertTopic applies one edited topic page in place, replacing the entry at the
+// same Path or appending.
+func (i *Index) UpsertTopic(_ context.Context, page *domain.Page) {
+	item := i.topicItem(page)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	topics := make([]TopicItem, 0, len(i.topics)+1)
+	replaced := false
+	for _, existing := range i.topics {
+		if existing.Path == item.Path {
+			replaced = true
+			topics = append(topics, item)
+			continue
+		}
+		topics = append(topics, existing)
+	}
+	if !replaced {
+		topics = append(topics, item)
+	}
+	byID := make(map[string]int, len(topics)*3)
+	for idx, topic := range topics {
+		registerTopicKeys(byID, topic, idx)
+	}
+	i.generation++
+	i.topics = topics
+	i.topicByID = byID
 }
 
 // QueryTasks returns the tasks matching filter, the current warning count and
@@ -937,41 +1072,9 @@ func (i *Index) buildTopics(
 	topics := make([]TopicItem, 0, len(listed))
 	byID := make(map[string]int, len(listed))
 	for _, page := range listed {
-		slug := slugify(page.Name)
-		id := page.GetString("topic_identifier")
-		if id == "" {
-			id = slug
-		}
-		goals := page.GetStringSlice("goals")
-		if goals == nil {
-			goals = []string{}
-		}
-		themes := page.GetStringSlice("themes")
-		if themes == nil {
-			themes = []string{}
-		}
-		topics = append(topics, TopicItem{
-			ID:        id,
-			Title:     page.Name,
-			Path:      relPath(i.cfg.VaultPath, page.FilePath),
-			Status:    page.GetString("status"),
-			Phase:     page.GetString("phase"),
-			Goals:     goals,
-			Themes:    themes,
-			Assignee:  page.Assignee(),
-			Vault:     i.cfg.VaultName,
-			Flag:      page.Flag(),
-			SessionID: page.ClaudeSessionID(),
-			Role:      page.GetString("role"),
-			Mode:      page.GetString("mode"),
-			DeferDate: page.GetString("defer_date"),
-			BlockedBy: page.BlockedBy(),
-			FlagSetBy: page.GetString("flag_set_by"),
-		})
+		topics = append(topics, i.topicItem(page))
 		idx := len(topics) - 1
-		byID[id] = idx
-		byID[page.Name] = idx
-		byID[slug] = idx
+		registerTopicKeys(byID, topics[idx], idx)
 	}
 	return topics, warnings, byID, nil
 }
