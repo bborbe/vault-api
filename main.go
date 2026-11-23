@@ -119,6 +119,13 @@ func (a *application) attachedVaults(ctx context.Context) ([]attachedVault, erro
 	}
 	attached := make([]attachedVault, 0, len(vaults))
 	for _, vault := range vaults {
+		// Each Build reads a whole vault, so a shutdown during startup must not
+		// wait for every remaining vault to finish.
+		select {
+		case <-ctx.Done():
+			return nil, errors.Wrap(ctx, ctx.Err(), "attach vaults cancelled")
+		default:
+		}
 		if vault.Name == a.VaultName || vault.Path == "" {
 			continue
 		}
@@ -168,10 +175,17 @@ func (a *application) attachedVaults(ctx context.Context) ([]attachedVault, erro
 //
 // A tree with no resolvable HEAD (not a git checkout) cannot use that gate, so
 // it is rebuilt on every tick rather than never.
+//
+// The unavailable line is logged when the vault goes unavailable, not on every
+// failed tick: a vault that stays broken would otherwise log every refresh
+// interval forever. /readiness keeps naming it for as long as it stays down, and
+// recovery is logged once so the outage has a visible end.
 func (a *application) attachedRefresh(extra attachedVault) run.Func {
 	return func(ctx context.Context) error {
 		ticker := time.NewTicker(a.RefreshInterval.Duration())
 		defer ticker.Stop()
+		// Seeded from the startup build, which already logged a failure itself.
+		unavailable := !extra.index.Built()
 		for {
 			select {
 			case <-ctx.Done():
@@ -182,8 +196,14 @@ func (a *application) attachedRefresh(extra attachedVault) run.Func {
 					extra.index.Verify()
 					continue
 				}
-				if err := extra.index.Build(ctx, extra.store); err != nil {
+				err := extra.index.Build(ctx, extra.store)
+				switch {
+				case err != nil && !unavailable:
 					glog.Warningf("%s: %v", vaultapi.UnavailableLine(extra.cfg.VaultName), err)
+					unavailable = true
+				case err == nil && unavailable:
+					glog.V(1).Infof("vault=%s rows_source=available", extra.cfg.VaultName)
+					unavailable = false
 				}
 			}
 		}

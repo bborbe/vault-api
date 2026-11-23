@@ -1050,6 +1050,24 @@ func (i *Index) VaultName() string {
 	return i.cfg.VaultName
 }
 
+// GetAttachedTask resolves id in the attached vaults, in attach order, and
+// returns the task with the config of the vault that holds it, so the caller can
+// read the page from that vault's own tree.
+//
+// ⚠️ It is for the single-task READ only. GetTask deliberately stays
+// primary-only: the write endpoints resolve through it and then write to the
+// primary vault's tree and git-rest, so widening it would send an attached
+// vault's task write into the wrong vault. A caller checks GetTask first; the
+// primary vault wins any id that exists in both.
+func (i *Index) GetAttachedTask(id string) (TaskItem, Config, bool) {
+	for _, extra := range i.attachedIndexes() {
+		if item, found, _ := extra.GetTask(id); found {
+			return item, extra.cfg, true
+		}
+	}
+	return TaskItem{}, Config{}, false
+}
+
 // attachedIndexes snapshots the attached list under the lock, so a query never
 // holds this index's lock while it reads another index.
 func (i *Index) attachedIndexes() []*Index {

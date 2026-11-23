@@ -313,11 +313,49 @@ func loadDocument(
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 		return document{}, false
 	}
+	return readDocument(ctx, w, deps.store, deps.vaultPath, deps.tasksDir, item)
+}
+
+// loadAttachedDocument serves the single-task read for a task that lives in an
+// attached vault (multi-vault mode). It reports handled=false whenever the
+// primary vault holds the id, knows it as invalid, or no attached vault holds it,
+// so the caller falls through to loadDocument and its existing 404/422 answers.
+//
+// Without it a multi-vault list would return rows whose own detail read 404s, and
+// the claude-wrapper flagged tick reads every listed task's detail: one 404 there
+// fails the whole tick, for every vault.
+func loadAttachedDocument(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps writeDeps,
+	id string,
+) (doc document, handled bool, ok bool) {
+	if _, found, invalid := deps.index.GetTask(id); found || invalid != "" {
+		return document{}, false, false
+	}
+	item, cfg, found := deps.index.GetAttachedTask(id)
+	if !found {
+		return document{}, false, false
+	}
+	doc, ok = readDocument(ctx, w, deps.store, cfg.VaultPath, cfg.TasksDir, item)
+	return doc, true, ok
+}
+
+// readDocument reads one indexed task's page from the given vault tree and parses
+// its frontmatter, answering the error itself when either step fails.
+func readDocument(
+	ctx context.Context,
+	w http.ResponseWriter,
+	store storage.PageStorage,
+	vaultPath string,
+	tasksDir string,
+	item vaultapi.TaskItem,
+) (document, bool) {
 	// The read goes through the page storage rather than the filesystem, so it
 	// increments vault_api_file_reads_total{kind="page_read"}. That counter is the
 	// positive control a verification run discriminates on: a handler that read
 	// the file directly would leave the criterion nothing to observe.
-	page, err := deps.store.ReadPage(ctx, deps.vaultPath, deps.tasksDir, item.Title)
+	page, err := store.ReadPage(ctx, vaultPath, tasksDir, item.Title)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  "read_failed",
