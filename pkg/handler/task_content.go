@@ -519,7 +519,7 @@ func handlePutTaskContent(deps writeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		var request contentRequest
-		if !decodeBody(w, r, &request) {
+		if !decodeBodyLimited(w, r, &request, maxTaskBodyBytes) {
 			return
 		}
 		if request.Body == nil {
@@ -569,7 +569,7 @@ func handleCreateTask(deps writeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		var request createRequest
-		if !decodeBody(w, r, &request) {
+		if !decodeBodyLimited(w, r, &request, maxTaskBodyBytes) {
 			return
 		}
 		title := strings.TrimSpace(request.Title)
