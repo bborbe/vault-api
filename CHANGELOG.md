@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.34.3
 
 - fix: carry assignee and priority on the goal list projection. `GET /api/v1/goals` (and `/api/v1/topics`) now serve the page's `priority:` as an integer (0 when absent, always emitted like the task projection) next to `assignee`, so vault-ui v0.113 goal cards no longer lose assignee/priority when the board reads goals from vault-api.
 
