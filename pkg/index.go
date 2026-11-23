@@ -107,6 +107,10 @@ type Index struct {
 	// reading and refuses its own swap if a write committed in between; without it
 	// a slow rebuild would silently undo a create that landed while it was reading.
 	generation uint64
+	// attached are secondary vaults whose rows the list queries merge with this
+	// index's own. They are read-only from this index's point of view: lookups by
+	// id, writes and change events stay with this (the primary) vault.
+	attached []*Index
 }
 
 // currentGeneration reads the commit counter under the lock.
@@ -716,6 +720,19 @@ func (i *Index) buildGoals(
 // QueryTasks returns the tasks matching filter, the current warning count and
 // the index age in seconds.
 func (i *Index) QueryTasks(filter TaskFilter) ([]TaskItem, int, int64) {
+	items, warnings, age := i.queryOwnTasks(filter)
+	for _, extra := range i.attachedIndexes() {
+		extraItems, extraWarnings, extraAge := extra.queryOwnTasks(filter)
+		items = append(items, extraItems...)
+		warnings += extraWarnings
+		age = max(age, extraAge)
+	}
+	return items, warnings, age
+}
+
+// queryOwnTasks answers the task query from this index alone, without the
+// attached vaults.
+func (i *Index) queryOwnTasks(filter TaskFilter) ([]TaskItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.filterTasks(filter), i.taskWarnings, ageSeconds(i.verifiedAt)
@@ -844,6 +861,18 @@ func updatedSince(item TaskItem, since *time.Time) bool {
 
 // QueryGoals returns every indexed goal, the warning count and the index age.
 func (i *Index) QueryGoals() ([]GoalItem, int, int64) {
+	items, warnings, age := i.queryOwnGoals()
+	for _, extra := range i.attachedIndexes() {
+		extraItems, extraWarnings, extraAge := extra.queryOwnGoals()
+		items = append(items, extraItems...)
+		warnings += extraWarnings
+		age = max(age, extraAge)
+	}
+	return items, warnings, age
+}
+
+// queryOwnGoals answers the goal list from this index alone.
+func (i *Index) queryOwnGoals() ([]GoalItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return append([]GoalItem(nil), i.goals...), i.goalWarnings, ageSeconds(i.verifiedAt)
@@ -853,6 +882,18 @@ func (i *Index) QueryGoals() ([]GoalItem, int, int64) {
 // The slice is never nil: a vault with no topics answers an empty JSON array,
 // matching every other list endpoint, rather than null.
 func (i *Index) QueryTopics() ([]TopicItem, int, int64) {
+	items, warnings, age := i.queryOwnTopics()
+	for _, extra := range i.attachedIndexes() {
+		extraItems, extraWarnings, extraAge := extra.queryOwnTopics()
+		items = append(items, extraItems...)
+		warnings += extraWarnings
+		age = max(age, extraAge)
+	}
+	return items, warnings, age
+}
+
+// queryOwnTopics answers the topic list from this index alone.
+func (i *Index) queryOwnTopics() ([]TopicItem, int, int64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return append([]TopicItem{}, i.topics...), i.topicWarnings, ageSeconds(i.verifiedAt)
@@ -990,7 +1031,62 @@ func (i *Index) Readiness() Readiness {
 		readiness.TreeAgeSeconds = &treeAge
 		readiness.Ready = readiness.Ready && i.fresh(treeAge)
 	}
+	readiness.UnavailableVaults = i.unavailableAttached()
 	return readiness
+}
+
+// Attach registers secondary vault indexes whose rows the list queries merge
+// with this index's own. It is the multi-vault mode's only seam: lookups by id,
+// writes and change events stay with this (the primary) vault, so a caller that
+// never attaches anything — every cluster deployment — behaves exactly as before.
+func (i *Index) Attach(extras ...*Index) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.attached = append(i.attached, extras...)
+}
+
+// VaultName is the vault this index reports on its rows.
+func (i *Index) VaultName() string {
+	return i.cfg.VaultName
+}
+
+// GetAttachedTask resolves id in the attached vaults, in attach order, and
+// returns the task with the config of the vault that holds it, so the caller can
+// read the page from that vault's own tree.
+//
+// ⚠️ It is for the single-task READ only. GetTask deliberately stays
+// primary-only: the write endpoints resolve through it and then write to the
+// primary vault's tree and git-rest, so widening it would send an attached
+// vault's task write into the wrong vault. A caller checks GetTask first; the
+// primary vault wins any id that exists in both.
+func (i *Index) GetAttachedTask(id string) (TaskItem, Config, bool) {
+	for _, extra := range i.attachedIndexes() {
+		if item, found, _ := extra.GetTask(id); found {
+			return item, extra.cfg, true
+		}
+	}
+	return TaskItem{}, Config{}, false
+}
+
+// attachedIndexes snapshots the attached list under the lock, so a query never
+// holds this index's lock while it reads another index.
+func (i *Index) attachedIndexes() []*Index {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return append([]*Index(nil), i.attached...)
+}
+
+// unavailableAttached names every attached vault whose last build did not
+// succeed. Called under i.mu's read lock, so it reads i.attached directly and
+// asks each attached index for its own state through that index's own lock.
+func (i *Index) unavailableAttached() []string {
+	var names []string
+	for _, extra := range i.attached {
+		if !extra.Built() {
+			names = append(names, extra.cfg.VaultName)
+		}
+	}
+	return names
 }
 
 // fresh reports whether one age is inside the staleness window. A zero

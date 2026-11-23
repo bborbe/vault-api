@@ -145,7 +145,17 @@ func handleGetTaskDocument(deps writeDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, document.view())
 			return
 		}
-		document, ok := loadDocument(r.Context(), w, deps, mux.Vars(r)["id"])
+		id := mux.Vars(r)["id"]
+		// Attached vaults only for the working-tree read: a ?ref= read is
+		// answered from the primary vault's git history, which holds no other
+		// vault's commits.
+		if document, handled, ok := loadAttachedDocument(r.Context(), w, deps, id); handled {
+			if ok {
+				writeJSON(w, http.StatusOK, document.view())
+			}
+			return
+		}
+		document, ok := loadDocument(r.Context(), w, deps, id)
 		if !ok {
 			return
 		}

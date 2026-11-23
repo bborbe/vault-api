@@ -171,4 +171,10 @@ type Readiness struct {
 	TreeAgeSeconds *int64 `json:"tree_age_seconds"`
 	Head           string `json:"head"`
 	Warnings       int    `json:"warnings"`
+	// UnavailableVaults names every attached vault whose index has not built. It
+	// is empty outside multi-vault mode. An attached vault never gates Ready —
+	// the primary vault's freshness does — but a list query that silently lacks a
+	// vault's rows reads exactly like "that vault has nothing", so the gap is
+	// named here as well as in the log.
+	UnavailableVaults []string `json:"unavailable_vaults,omitempty"`
 }

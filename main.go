@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/bborbe/cqrs/base"
+	"github.com/bborbe/errors"
 	libhttp "github.com/bborbe/http"
 	"github.com/bborbe/run"
 	libsentry "github.com/bborbe/sentry"
 	"github.com/bborbe/service"
 	libtime "github.com/bborbe/time"
+	"github.com/bborbe/vault-cli/pkg/config"
 	"github.com/bborbe/vault-cli/pkg/storage"
 	"github.com/golang/glog"
 
@@ -81,6 +83,131 @@ type application struct {
 	// published — silently, since the instance still serves reads and looks
 	// healthy. Set this to a path that survives a pod restart.
 	EventBaselinePath string `required:"false" arg:"event-baseline-path" env:"EVENT_BASELINE_PATH" usage:"file persisting the last published commit so a restart resumes from it. Empty = process-local baseline, which silently skips changes pushed while the process was down."`
+	// MultiVault adds every other vault in vault-cli's config to the list
+	// queries, the way vault-ui serves every configured vault. It is read-only for
+	// those vaults: lookups by id, writes and change events stay with
+	// VaultPath/VaultName, the primary. Off by default, so every cluster
+	// deployment keeps serving exactly its one vault.
+	MultiVault bool `required:"false" arg:"multi-vault"         env:"MULTI_VAULT"         usage:"also serve every other vault in vault-cli's config on the list endpoints (read-only); off = single-vault, the cluster mode"                                              default:"false"`
+	// VaultCLIConfig points at a vault-cli config.yaml other than the default.
+	// It exists so a test or a probe can name a broken vault without touching the
+	// live config, which vault-cli, vault-ui and both wrappers also read.
+	VaultCLIConfig string `required:"false" arg:"vault-cli-config"    env:"VAULT_CLI_CONFIG"    usage:"path to vault-cli's config.yaml for -multi-vault; empty = vault-cli's default (~/.config/vault-cli/config.yaml)"`
+}
+
+// attachedVault is one secondary vault served in multi-vault mode: its own index
+// and its own store, because each vault keeps its pages in its own directories.
+type attachedVault struct {
+	index *vaultapi.Index
+	store storage.PageStorage
+	cfg   vaultapi.Config
+}
+
+// attachedVaults builds one read-only index per vault in vault-cli's config,
+// skipping the primary vault, which the main index already serves.
+//
+// A vault whose index fails to build is still attached: it is logged with the
+// fixed unavailable token now, reported by /readiness, and retried by its refresh
+// loop. Dropping it instead would make its rows vanish with nothing saying so.
+func (a *application) attachedVaults(ctx context.Context) ([]attachedVault, error) {
+	if !a.MultiVault {
+		return nil, nil
+	}
+	vaults, err := config.NewLoader(a.VaultCLIConfig).GetAllVaults(ctx)
+	if err != nil {
+		return nil, errors.Wrapf(ctx, err, "load vault-cli config %q", a.VaultCLIConfig)
+	}
+	attached := make([]attachedVault, 0, len(vaults))
+	for _, vault := range vaults {
+		// Each Build reads a whole vault, so a shutdown during startup must not
+		// wait for every remaining vault to finish.
+		select {
+		case <-ctx.Done():
+			return nil, errors.Wrap(ctx, ctx.Err(), "attach vaults cancelled")
+		default:
+		}
+		if vault.Name == a.VaultName || vault.Path == "" {
+			continue
+		}
+		// Only task-bearing vaults: one that declares no tasks_dir is a knowledge
+		// vault, and GetTasksDir's "Tasks" default names a directory it does not
+		// have, so attaching it would report a permanent unavailable that means
+		// nothing. This is the same population `vault-cli config list` consumers
+		// select on (tasks_dir present).
+		if vault.TasksDir == "" {
+			continue
+		}
+		cfg := vaultapi.Config{
+			VaultPath: vault.Path,
+			VaultName: vault.Name,
+			TasksDir:  vault.GetTasksDir(),
+			GoalsDir:  vault.GetGoalsDir(),
+			TopicsDir: vault.GetTopicsDir(),
+		}
+		storageConfig := storage.DefaultConfig()
+		storageConfig.TasksDir = cfg.TasksDir
+		storageConfig.GoalsDir = cfg.GoalsDir
+		storageConfig.TopicsDir = cfg.TopicsDir
+		extra := attachedVault{
+			index: vaultapi.NewIndex(cfg, vaultapi.NewNoopMetrics()),
+			store: storage.NewPageStorage(storageConfig),
+			cfg:   cfg,
+		}
+		if err := extra.index.Build(ctx, extra.store); err != nil {
+			glog.Warningf("%s: %v", vaultapi.UnavailableLine(vault.Name), err)
+		}
+		attached = append(attached, extra)
+	}
+	glog.V(1).Infof("multi-vault: attached %d vault(s) beside %s", len(attached), a.VaultName)
+	return attached, nil
+}
+
+// attachedRefresh keeps one attached vault's index current, and publishes no
+// change events: events stay with the primary.
+//
+// ⚠️ It never uses the filesystem watch, even in -watch mode. On macOS the watch
+// holds one descriptor per watched file, so watching every configured vault
+// exhausted the process's descriptor limit and the HTTP server stopped
+// accepting connections ("accept: too many open files") — taking the primary
+// vault's API down with it. Measured 2026-11-23 on a 13-vault probe. The HEAD
+// check costs one stat per tick; the vaults commit through git-ai-sync every
+// minute or two, which is well inside the flagged tick's own cadence.
+//
+// A tree with no resolvable HEAD (not a git checkout) cannot use that gate, so
+// it is rebuilt on every tick rather than never.
+//
+// The unavailable line is logged when the vault goes unavailable, not on every
+// failed tick: a vault that stays broken would otherwise log every refresh
+// interval forever. /readiness keeps naming it for as long as it stays down, and
+// recovery is logged once so the outage has a visible end.
+func (a *application) attachedRefresh(extra attachedVault) run.Func {
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(a.RefreshInterval.Duration())
+		defer ticker.Stop()
+		// Seeded from the startup build, which already logged a failure itself.
+		unavailable := !extra.index.Built()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				current := vaultapi.ResolveHead(extra.cfg.VaultPath)
+				if current != "" && extra.index.Built() && extra.index.Head() == current {
+					extra.index.Verify()
+					continue
+				}
+				err := extra.index.Build(ctx, extra.store)
+				switch {
+				case err != nil && !unavailable:
+					glog.Warningf("%s: %v", vaultapi.UnavailableLine(extra.cfg.VaultName), err)
+					unavailable = true
+				case err == nil && unavailable:
+					glog.V(1).Infof("vault=%s rows_source=available", extra.cfg.VaultName)
+					unavailable = false
+				}
+			}
+		}
+	}
 }
 
 // eventVaultName is the vault identity this instance stamps on published task
@@ -114,6 +241,14 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	}, metrics)
 	if err := index.Build(ctx, store); err != nil {
 		glog.Warningf("initial index build failed: %v", err)
+	}
+
+	attached, err := a.attachedVaults(ctx)
+	if err != nil {
+		return errors.Wrap(ctx, err, "attach vaults")
+	}
+	for _, extra := range attached {
+		index.Attach(extra.index)
 	}
 
 	// One producer for both paths: the write handlers publish through this handle and
@@ -175,14 +310,18 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	// it lost the compare-and-swap — that a file write cannot report.
 	refs := gitrest.NewRefClient(a.GitRestURL, a.GatewaySecret, http.DefaultClient)
 
-	return run.CancelOnFirstFinish(ctx,
+	runners := []run.Func{
 		a.refresh(index, store, feed, baselineStore),
 		a.publishTaskEvents(taskPublisher),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
 			ctx, index, store, a.GatewaySecret, a.VaultPath, a.TasksDir, a.eventVaultName(), writer,
 			libtime.NewCurrentDateTime(), taskPublisher, refs,
 		)),
-	)
+	}
+	for _, extra := range attached {
+		runners = append(runners, a.attachedRefresh(extra))
+	}
+	return run.CancelOnFirstFinish(ctx, runners...)
 }
 
 // publishTaskEvents builds the change-event producer off the startup path and
