@@ -133,8 +133,8 @@ func startWatcher(
 	return done
 }
 
-// applyOneEvent updates the index for a single task page, returning false when
-// the event needs a full rebuild (a delete, a goal/topic edit, or a page that
+// applyOneEvent updates the index for a single task, goal or topic page, returning false when
+// the event needs a full rebuild (a delete, an unknown type, or a page that
 // could not be read). The read is what keeps the fast path correct: the index
 // entry must reflect the file's current bytes, not the event's name alone.
 func applyOneEvent(
@@ -143,10 +143,24 @@ func applyOneEvent(
 	store storage.PageStorage,
 	ev ops.WatchEvent,
 ) bool {
-	if ev.Type != "task" || ev.Event == "deleted" {
+	if ev.Event == "deleted" {
 		return false
 	}
-	page, err := store.ReadPage(ctx, index.cfg.VaultPath, index.cfg.TasksDir, ev.Name)
+	var dir string
+	switch ev.Type {
+	case "task":
+		dir = index.cfg.TasksDir
+	case "goal":
+		dir = index.cfg.GoalsDir
+	case "topic":
+		dir = index.cfg.TopicsDir
+	default:
+		return false
+	}
+	if dir == "" {
+		return false
+	}
+	page, err := store.ReadPage(ctx, index.cfg.VaultPath, dir, ev.Name)
 	if err != nil {
 		glog.Warningf(
 			"watch: reading %q for an incremental update failed, rebuilding: %v",
@@ -155,7 +169,14 @@ func applyOneEvent(
 		)
 		return false
 	}
-	index.UpsertTask(ctx, page)
+	switch ev.Type {
+	case "goal":
+		index.UpsertGoal(ctx, page)
+	case "topic":
+		index.UpsertTopic(ctx, page)
+	default:
+		index.UpsertTask(ctx, page)
+	}
 	return true
 }
 

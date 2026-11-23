@@ -7,10 +7,15 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"time"
 
+	"github.com/bborbe/vault-cli/pkg/storage"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	vaultapi "github.com/bborbe/vault-api/pkg"
 	"github.com/bborbe/vault-api/pkg/publisher"
 )
 
@@ -127,5 +132,76 @@ var _ = Describe("persistBaseline", func() {
 
 		Expect(store.saves).To(Equal([]string{"bbbbbbb2"}))
 		Expect(saved).To(Equal("bbbbbbb2"))
+	})
+})
+
+var _ = Describe("attachedNeedsRebuild", func() {
+	var (
+		root  string
+		extra attachedVault
+		last  vaultapi.Fingerprint
+	)
+
+	BeforeEach(func() {
+		var err error
+		root, err = os.MkdirTemp("", "vault-api-attached")
+		Expect(err).NotTo(HaveOccurred())
+		for _, dir := range []string{"T", "G", "P", ".git"} {
+			Expect(os.MkdirAll(filepath.Join(root, dir), 0o750)).To(Succeed())
+		}
+		Expect(os.WriteFile(
+			filepath.Join(root, ".git", "HEAD"),
+			[]byte("0123456789abcdef0123456789abcdef01234567\n"),
+			0o600,
+		)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(root, "T", "a.md"), []byte("---\n---\n"), 0o600)).
+			To(Succeed())
+		cfg := vaultapi.Config{
+			VaultPath: root, VaultName: "v", TasksDir: "T", GoalsDir: "G", TopicsDir: "P",
+		}
+		storageConfig := storage.DefaultConfig()
+		storageConfig.TasksDir, storageConfig.GoalsDir, storageConfig.TopicsDir = "T", "G", "P"
+		extra = attachedVault{
+			index: vaultapi.NewIndex(cfg, vaultapi.NewNoopMetrics()),
+			store: storage.NewPageStorage(storageConfig),
+			cfg:   cfg,
+		}
+		last = vaultapi.PageFingerprint(cfg)
+		Expect(extra.index.Build(context.Background(), extra.store)).To(Succeed())
+	})
+
+	AfterEach(func() { _ = os.RemoveAll(root) })
+
+	It("does not rebuild when neither HEAD nor the page files moved", func() {
+		rebuild, fp := attachedNeedsRebuild(extra, last)
+		Expect(rebuild).To(BeFalse())
+		Expect(fp).To(Equal(last))
+	})
+
+	It("rebuilds when a page file was edited without a new HEAD", func() {
+		later := time.Now().Add(time.Hour)
+		Expect(os.Chtimes(filepath.Join(root, "T", "a.md"), later, later)).To(Succeed())
+		rebuild, fp := attachedNeedsRebuild(extra, last)
+		Expect(rebuild).To(BeTrue())
+		Expect(fp).NotTo(Equal(last))
+		// Once the new fingerprint is carried forward the vault settles again.
+		rebuild, _ = attachedNeedsRebuild(extra, fp)
+		Expect(rebuild).To(BeFalse())
+	})
+
+	It("rebuilds when a page file was created", func() {
+		Expect(os.WriteFile(filepath.Join(root, "G", "g.md"), []byte("x"), 0o600)).To(Succeed())
+		rebuild, _ := attachedNeedsRebuild(extra, last)
+		Expect(rebuild).To(BeTrue())
+	})
+
+	It("rebuilds when HEAD moved", func() {
+		Expect(os.WriteFile(
+			filepath.Join(root, ".git", "HEAD"),
+			[]byte("fedcba9876543210fedcba9876543210fedcba98\n"),
+			0o600,
+		)).To(Succeed())
+		rebuild, _ := attachedNeedsRebuild(extra, last)
+		Expect(rebuild).To(BeTrue())
 	})
 })

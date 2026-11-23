@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## v0.34.3
 
+- fix: **a goal or topic edit is applied in place instead of rebuilding the whole index.** `applyOneEvent` took the incremental path only for task events, so a goal or topic file change fell through to a full `Index.Build` (~37s on private-personal, serialized behind other rebuilds) and a goal flag/unflag showed 60-75s late. It now reads the page and calls the new `Index.UpsertGoal` / `Index.UpsertTopic`, which share their item projection with `Build`; deletes still rebuild.
+- fix: **an attached vault (`-multi-vault`) now refreshes when its page files change, not only when its git HEAD moves.** A frontmatter edit written out of band (vault-cli, the vault-ui flag toggle) stayed invisible until git-ai-sync committed it (~1-2 min) plus the next 30s tick. Each attached tick now also reads a cheap fingerprint of the tasks/goals/topics directories (newest `*.md` mtime plus file count; `ReadDir` + stat, no file reads, no filesystem watch) and rebuilds when it moved, alongside the existing HEAD check.
 - fix: carry assignee and priority on the goal list projection. `GET /api/v1/goals` (and `/api/v1/topics`) now serve the page's `priority:` as an integer (0 when absent, always emitted like the task projection) next to `assignee`, so vault-ui v0.113 goal cards no longer lose assignee/priority when the board reads goals from vault-api.
 
 ## v0.34.2
