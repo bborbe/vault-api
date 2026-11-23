@@ -13,19 +13,26 @@ import (
 // TaskItem is the typed projection of one task page. It is served by
 // GET /api/v1/tasks and GET /api/v1/tasks/{id}.
 type TaskItem struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Path     string   `json:"path"`
-	Status   string   `json:"status"`
-	Phase    string   `json:"phase"`
-	TaskType string   `json:"task_type"`
-	ShortID  string   `json:"short_id,omitempty"`
-	Stage    string   `json:"stage"`
-	Assignee string   `json:"assignee"`
-	Goals    []string `json:"goals"`
-	Cluster  *string  `json:"cluster"`
-	Flag     bool     `json:"flag"`
-	Vault    string   `json:"vault"`
+	ID string `json:"id"`
+	// TaskIdentifierPrevious is the page's recorded predecessor identifier, empty
+	// when the page was never re-addressed. ID carries the CURRENT identifier; this
+	// carries the one it replaced, so a consumer holding only the listing can answer
+	// "which file carries this identifier" for both keys. Without it the predecessor
+	// is readable only by reading every page — the N+1 this projection exists to
+	// remove, and the reason an alias lookup could never be answered from the index.
+	TaskIdentifierPrevious string   `json:"task_identifier_previous,omitempty"`
+	Title                  string   `json:"title"`
+	Path                   string   `json:"path"`
+	Status                 string   `json:"status"`
+	Phase                  string   `json:"phase"`
+	TaskType               string   `json:"task_type"`
+	ShortID                string   `json:"short_id,omitempty"`
+	Stage                  string   `json:"stage"`
+	Assignee               string   `json:"assignee"`
+	Goals                  []string `json:"goals"`
+	Cluster                *string  `json:"cluster"`
+	Flag                   bool     `json:"flag"`
+	Vault                  string   `json:"vault"`
 	// CurrentJob is the task's raw frontmatter current_job — the id of the job
 	// that claimed it, empty when none has. The gauge reports its presence as
 	// job_state; the id itself is served because a reader chasing a stuck record

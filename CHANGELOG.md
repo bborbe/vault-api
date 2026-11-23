@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`GET /api/v1/tasks` carries `task_identifier_previous`.** `TaskItem` projected the current identifier (`ID`) but not the predecessor a re-addressed page records, so a consumer holding only the listing could answer "which file carries this identifier" for the current key and never for the alias. The field is projected from frontmatter like the other board fields and is empty when the page was never re-addressed — an absent predecessor stays distinguishable from an empty one only in that both mean "no alias".
+
 ## v0.34.4
 
 - fix: **a goal or topic edit is applied in place instead of rebuilding the whole index.** `applyOneEvent` took the incremental path only for task events, so a goal or topic file change fell through to a full `Index.Build` (~37s on private-personal, serialized behind other rebuilds) and a goal flag/unflag showed 60-75s late. It now reads the page and calls the new `Index.UpsertGoal` / `Index.UpsertTopic`, which share their item projection with `Build`; deletes still rebuild.

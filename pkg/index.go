@@ -550,20 +550,21 @@ func (i *Index) taskItem(
 		goals = []string{}
 	}
 	return TaskItem{
-		ID:        id,
-		Title:     page.Name,
-		Path:      relPath(i.cfg.VaultPath, page.FilePath),
-		Status:    string(status),
-		Phase:     phase,
-		TaskType:  task.GetString("task_type"),
-		ShortID:   task.GetString("short_id"),
-		Stage:     task.GetString("stage"),
-		Assignee:  task.Assignee(),
-		Goals:     goals,
-		Cluster:   optionalString(task.GetString("cluster")),
-		Flag:      task.Flag(),
-		Vault:     i.cfg.VaultName,
-		UpdatedAt: page.ModifiedDate,
+		ID:                     id,
+		TaskIdentifierPrevious: task.GetString("task_identifier_previous"),
+		Title:                  page.Name,
+		Path:                   relPath(i.cfg.VaultPath, page.FilePath),
+		Status:                 string(status),
+		Phase:                  phase,
+		TaskType:               task.GetString("task_type"),
+		ShortID:                task.GetString("short_id"),
+		Stage:                  task.GetString("stage"),
+		Assignee:               task.Assignee(),
+		Goals:                  goals,
+		Cluster:                optionalString(task.GetString("cluster")),
+		Flag:                   task.Flag(),
+		Vault:                  i.cfg.VaultName,
+		UpdatedAt:              page.ModifiedDate,
 		// Raw frontmatter, uncoerced: the gauge maps an empty value onto its
 		// sentinel (JobNone / PRStateUnknown), so the two readings stay distinct
 		// here and one mapping site owns the coercion.
