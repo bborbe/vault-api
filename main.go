@@ -101,6 +101,9 @@ type attachedVault struct {
 	index *vaultapi.Index
 	store storage.PageStorage
 	cfg   vaultapi.Config
+	// fingerprint is the page-directory fingerprint taken just before the startup
+	// build, so an edit landing during that build is seen on the first tick.
+	fingerprint vaultapi.Fingerprint
 }
 
 // attachedVaults builds one read-only index per vault in vault-cli's config,
@@ -149,9 +152,10 @@ func (a *application) attachedVaults(ctx context.Context) ([]attachedVault, erro
 		storageConfig.GoalsDir = cfg.GoalsDir
 		storageConfig.TopicsDir = cfg.TopicsDir
 		extra := attachedVault{
-			index: vaultapi.NewIndex(cfg, vaultapi.NewNoopMetrics()),
-			store: storage.NewPageStorage(storageConfig),
-			cfg:   cfg,
+			index:       vaultapi.NewIndex(cfg, vaultapi.NewNoopMetrics()),
+			store:       storage.NewPageStorage(storageConfig),
+			cfg:         cfg,
+			fingerprint: vaultapi.PageFingerprint(cfg),
 		}
 		if err := extra.index.Build(ctx, extra.store); err != nil {
 			glog.Warningf("%s: %v", vaultapi.UnavailableLine(vault.Name), err)
@@ -171,7 +175,9 @@ func (a *application) attachedVaults(ctx context.Context) ([]attachedVault, erro
 // accepting connections ("accept: too many open files") — taking the primary
 // vault's API down with it. Measured 2026-11-23 on a 13-vault probe. The HEAD
 // check costs one stat per tick; the vaults commit through git-ai-sync every
-// minute or two, which is well inside the flagged tick's own cadence.
+// minute or two, which is well inside the flagged tick's own cadence. A cheap
+// page-directory fingerprint (see attachedNeedsRebuild) additionally catches
+// out-of-band writes before that commit lands.
 //
 // A tree with no resolvable HEAD (not a git checkout) cannot use that gate, so
 // it is rebuilt on every tick rather than never.
@@ -186,13 +192,15 @@ func (a *application) attachedRefresh(extra attachedVault) run.Func {
 		defer ticker.Stop()
 		// Seeded from the startup build, which already logged a failure itself.
 		unavailable := !extra.index.Built()
+		fingerprint := extra.fingerprint
 		for {
 			select {
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				current := vaultapi.ResolveHead(extra.cfg.VaultPath)
-				if current != "" && extra.index.Built() && extra.index.Head() == current {
+				var rebuild bool
+				rebuild, fingerprint = attachedNeedsRebuild(extra, fingerprint)
+				if !rebuild {
 					extra.index.Verify()
 					continue
 				}
@@ -208,6 +216,31 @@ func (a *application) attachedRefresh(extra attachedVault) run.Func {
 			}
 		}
 	}
+}
+
+// attachedNeedsRebuild decides whether an attached vault's index is stale and
+// returns the page fingerprint to carry into the next tick. Two signals, either
+// is enough: a new git HEAD (a commit or pull landed), or a moved page-directory
+// fingerprint (a file was written out of band, e.g. by vault-cli, and git-ai-sync
+// has not committed it yet). The fingerprint is a few ReadDir+stat calls, no
+// watches and no file reads.
+//
+// The returned fingerprint is the one read now, before any rebuild: an edit that
+// lands while the rebuild runs then differs from it on the next tick and is not
+// lost.
+func attachedNeedsRebuild(
+	extra attachedVault,
+	last vaultapi.Fingerprint,
+) (bool, vaultapi.Fingerprint) {
+	now := vaultapi.PageFingerprint(extra.cfg)
+	if now != last {
+		return true, now
+	}
+	current := vaultapi.ResolveHead(extra.cfg.VaultPath)
+	if current != "" && extra.index.Built() && extra.index.Head() == current {
+		return false, now
+	}
+	return true, now
 }
 
 // eventVaultName is the vault identity this instance stamps on published task

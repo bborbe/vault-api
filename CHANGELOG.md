@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **an attached vault (`-multi-vault`) now refreshes when its page files change, not only when its git HEAD moves.** A frontmatter edit written out of band (vault-cli, the vault-ui flag toggle) stayed invisible until git-ai-sync committed it (~1-2 min) plus the next 30s tick. Each attached tick now also reads a cheap fingerprint of the tasks/goals/topics directories (newest `*.md` mtime plus file count; `ReadDir` + stat, no file reads, no filesystem watch) and rebuilds when it moved, alongside the existing HEAD check.
+
 ## v0.34.2
 
 - fix: **`GET /api/v1/goals` and `/api/v1/topics` carry `phase`, so the board can group goal and topic cards into phase columns like tasks.** `GoalItem` and `TopicItem` were written for the flagged-row consumer and never carried the page's `phase:`; the board groups cards by `item.phase`, so every goal and topic landed in the `—` column and the six phase columns stayed empty. Measured 2026-11-23 against the live `:9091`: `/api/v1/goals` returned 511 items and `/api/v1/topics` 30, none with a `phase` key, while all 421 `24 Goals/*.md` and 23 `23 Topics/*.md` declare one. The field is carried raw, matching the goal/topic convention (`GoalFrontmatter.Phase` preserves legacy and hand-typed values), and the board maps `in_progress` onto the `execution` column client-side.
