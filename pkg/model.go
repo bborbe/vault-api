@@ -90,10 +90,10 @@ func IsTerminalStatus(status string) bool {
 // GoalItem is the typed projection of one goal page. It is served by
 // GET /api/v1/goals and GET /api/v1/goals/{id}.
 type GoalItem struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Path     string   `json:"path"`
-	Status   string   `json:"status"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Path   string `json:"path"`
+	Status string `json:"status"`
 	// Phase is the page's frontmatter `phase:`, carried raw. Goals and topics
 	// keep their own phase convention (GoalFrontmatter.Phase preserves legacy
 	// and hand-typed values rather than normalising them), and the board's
@@ -103,7 +103,10 @@ type GoalItem struct {
 	Phase    string   `json:"phase"`
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`
-	Vault    string   `json:"vault"`
+	// Priority is the page's frontmatter priority as an integer, 0 when absent,
+	// always emitted like TaskItem.Priority so the board can order goal cards.
+	Priority int    `json:"priority"`
+	Vault    string `json:"vault"`
 	// Flag is the page's frontmatter `flag:`, served so a consumer selecting the
 	// operator-flagged rows can filter server-side instead of re-reading the page.
 	// Without it a goal's flag was invisible to every API consumer, which is why
@@ -133,16 +136,18 @@ type GoalItem struct {
 // TopicItem is the typed projection of one topic page. It is served by
 // GET /api/v1/topics.
 type TopicItem struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Path     string   `json:"path"`
-	Status   string   `json:"status"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Path   string `json:"path"`
+	Status string `json:"status"`
 	// Phase is the topic's own `phase:` on the same terms as GoalItem.Phase.
 	Phase    string   `json:"phase"`
 	Goals    []string `json:"goals"`
 	Themes   []string `json:"themes"`
 	Assignee string   `json:"assignee,omitempty"`
-	Vault    string   `json:"vault"`
+	// Priority is the topic's own `priority:` on the same terms as GoalItem.Priority.
+	Priority int    `json:"priority"`
+	Vault    string `json:"vault"`
 	// Flag and SessionID carry the same two fields GoalItem documents, for the
 	// same reason: a topic can be flagged, and its manager's recorded session is
 	// what a consumer resolves a subject's liveness from. The enrichment fields
