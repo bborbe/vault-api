@@ -98,6 +98,11 @@ var otherProducerFields = map[string]bool{
 	"issue_url":        true, // sentry-watcher
 	"latest_go":        true, // github-update-go-watcher
 	"launcher":         true, // recurring-task-creator
+	// created is stamped by recurring-task-creator's AI Knowledge Sharing
+	// template. Measured 2026-11-22 on agent-task-controller-seibert-personal-0:
+	// every create answered 400 unknown_field field=created and was dropped
+	// whole, so the weekly instance never materialized.
+	"created": true, // recurring-task-creator, AI Knowledge Sharing template
 	// max_retries is carried, not written, by the controller's result writer: a
 	// result PATCH is a read-modify-write, so the operator-set value rides along
 	// in the payload and refusing it refused the whole write.

@@ -366,6 +366,13 @@ var _ = Describe("Task content endpoints", func() {
 				// (`page_type`) instead of as the remainder of the same one.
 				"page_type": `"task"`,
 				"launcher":  `"claude"`,
+				// created is stamped by recurring-task-creator's AI Knowledge
+				// Sharing template, and vault-cli's closure gate reads exactly
+				// that key. Its absence refused every create of that instance —
+				// measured 2026-11-22 on
+				// agent-task-controller-seibert-personal-0: 400 unknown_field
+				// field=created, the command dropped whole, no file written.
+				"created": `"2026-11-23"`,
 				// Watcher create keys: each must survive the create allowlist,
 				// not only PATCH. fieldRefusal names one refused key per attempt,
 				// so a partial set reads as a different bug on every retry.
