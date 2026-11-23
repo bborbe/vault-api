@@ -4,7 +4,11 @@
 
 package vaultapi
 
-import "time"
+import (
+	"time"
+
+	"github.com/bborbe/vault-cli/pkg/domain"
+)
 
 // TaskItem is the typed projection of one task page. It is served by
 // GET /api/v1/tasks and GET /api/v1/tasks/{id}.
@@ -39,6 +43,39 @@ type TaskItem struct {
 	// absent. It is served because the `due` filter reads it and a caller checking
 	// the boundary needs the value the filter saw.
 	DeferDate *time.Time `json:"defer_date,omitempty"`
+
+	// The fields below are the rest of what the board renders. Without them a
+	// consumer serving the board from this list must read each task page itself —
+	// an N+1 over the whole vault — or drop the field from the card.
+	//
+	// BlockedBy is the page's blocked_by list, always non-nil so a row with no
+	// blockers serialises as [] rather than null. The board's blocked badge reads
+	// the list itself, not a precomputed boolean, because it also names the
+	// blockers on the card.
+	BlockedBy []string `json:"blocked_by"`
+	// Priority is the frontmatter priority as an integer, 0 when absent. It is
+	// always emitted so a caller ordering the board never has to infer "missing"
+	// from an absent key.
+	Priority int `json:"priority"`
+	// DueDate and PlannedDate are the frontmatter dates rendered by vault-cli's
+	// own rule: YYYY-MM-DD for a date-only value, RFC3339 for one carrying a time,
+	// nil when absent. The board's urgency tiers compare the date-only form
+	// against today, which is why this is a string and not a timestamp.
+	DueDate     *string `json:"due_date"`
+	PlannedDate *string `json:"planned_date"`
+	// ClaudeSessionID is the page's recorded session, null when it carries none.
+	// The board's live-session badge resolves liveness from it.
+	ClaudeSessionID *string `json:"claude_session_id"`
+	// Jira is the page's own `jira:` value, carried verbatim — in the vaults it is
+	// as often a bare key as a browse URL — and null when absent.
+	Jira *string `json:"jira"`
+	// Mode is the page's own `mode:` value, the execution mode the row opens with,
+	// null when absent. It is carried verbatim because the field is free-form on
+	// disk.
+	Mode *string `json:"mode"`
+	// OpenQuestions is the task's Open Questions section in section order, always
+	// non-nil so a task with none serialises as [] rather than null.
+	OpenQuestions []domain.OpenQuestion `json:"open_questions"`
 }
 
 // IsTerminalStatus reports whether a task status ends the task's life. The vault

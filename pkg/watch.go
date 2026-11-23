@@ -155,7 +155,7 @@ func applyOneEvent(
 		)
 		return false
 	}
-	index.UpsertTask(page)
+	index.UpsertTask(ctx, page)
 	return true
 }
 

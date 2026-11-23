@@ -327,19 +327,23 @@ func (i *Index) buildTasks(
 	if err != nil {
 		return nil, nil, 0, nil, taskSets{}, err
 	}
-	listed, err := pages.ListPages(ctx, i.cfg.VaultPath, i.cfg.TasksDir)
+	// ListEntries, not ListPages: the page index already parses each body's Open
+	// Questions section while reading the file, so the projection carries them at
+	// no extra I/O. Reading the pages and then re-reading each body would turn one
+	// index pass into an N+1 over the vault.
+	entries, err := pages.ListEntries(ctx, i.cfg.VaultPath, i.cfg.TasksDir)
 	if err != nil {
 		return nil, nil, 0, nil, taskSets{}, err
 	}
 
-	tasks := make([]TaskItem, 0, len(listed))
+	tasks := make([]TaskItem, 0, len(entries))
 	invalid := make(map[string]string)
-	byID := make(map[string]int, len(listed))
+	byID := make(map[string]int, len(entries))
 	sets := newTaskSets()
 
-	readable := make(map[string]struct{}, len(listed))
-	for _, page := range listed {
-		readable[page.Name] = struct{}{}
+	readable := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		readable[entry.Page.Name] = struct{}{}
 	}
 	warnings := 0
 	for _, name := range files {
@@ -351,12 +355,12 @@ func (i *Index) buildTasks(
 		invalid[name] = "unparseable frontmatter"
 	}
 
-	for _, page := range listed {
-		item, reason, ok := i.taskItem(page)
+	for _, entry := range entries {
+		item, reason, ok := i.taskItem(entry.Page, entry.OpenQuestions)
 		if !ok {
 			warnings++
-			invalid[slugify(page.Name)] = reason
-			invalid[page.Name] = reason
+			invalid[slugify(entry.Page.Name)] = reason
+			invalid[entry.Page.Name] = reason
 			continue
 		}
 
@@ -415,8 +419,25 @@ func registerTask(byID map[string]int, sets taskSets, item TaskItem, idx int) {
 // patched in place: a replace has to drop the old item's keys and set
 // memberships, and rebuilding is O(tasks) over memory already held, with no file
 // read — the cost this index exists to avoid is I/O, not map writes.
-func (i *Index) UpsertTask(page *domain.Page) {
-	item, _, ok := i.taskItem(page)
+func (i *Index) UpsertTask(ctx context.Context, page *domain.Page) {
+	// The full build reads each body's Open Questions from the page index, which
+	// parses them while reading the file. This path holds the page's body already,
+	// so it parses the same section from those bytes — the two indexing paths must
+	// describe a page identically, and an empty list here would make an upserted
+	// task disagree with a built one.
+	openQuestions, err := openQuestionsFromContent(ctx, page.Content)
+	if err != nil {
+		// A cancelled context is the only error this parse returns. Serving the
+		// task with no questions would misreport it, so it is excluded instead —
+		// the next full build re-indexes it correctly.
+		glog.Warningf(
+			"index: parsing open questions for %q failed, skipping upsert: %v",
+			page.Name,
+			err,
+		)
+		return
+	}
+	item, _, ok := i.taskItem(page, openQuestions)
 	if !ok {
 		// A page the full build would exclude must not enter through the write
 		// path either: the two have to agree about what is indexed.
@@ -491,9 +512,14 @@ func (i *Index) UpsertTask(page *domain.Page) {
 	i.metrics.SetOpenTasks(counts)
 }
 
-// taskItem converts one page into a TaskItem. ok is false when the page must be
-// excluded from the index, and reason then names why for the warnings map.
-func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
+// taskItem converts one page into a TaskItem. openQuestions is the page body's
+// Open Questions section, already parsed by whichever index path produced the
+// page. ok is false when the page must be excluded from the index, and reason
+// then names why for the warnings map.
+func (i *Index) taskItem(
+	page *domain.Page,
+	openQuestions []domain.OpenQuestion,
+) (TaskItem, string, bool) {
 	task := domain.NewTask(page.RawMap(), page.FileMetadata, page.Content)
 
 	rawStatus := task.GetString("status")
@@ -540,7 +566,74 @@ func (i *Index) taskItem(page *domain.Page) (TaskItem, string, bool) {
 		CurrentJob: task.GetString("current_job"),
 		PRState:    task.GetString("pr_state"),
 		DeferDate:  deferDate(task),
+		// The board's fields. Every one is projected from frontmatter the page
+		// already parsed, so carrying them costs no additional read.
+		BlockedBy:       nonNilStrings(task.BlockedBy()),
+		Priority:        int(task.Priority()),
+		DueDate:         dateString(task.DueDate()),
+		PlannedDate:     dateString(task.PlannedDate()),
+		ClaudeSessionID: optionalString(task.ClaudeSessionID()),
+		Jira:            optionalString(task.GetString("jira")),
+		Mode:            optionalString(task.GetString("mode")),
+		OpenQuestions:   nonNilOpenQuestions(openQuestions),
 	}, "", true
+}
+
+// dateString renders a frontmatter date the way vault-cli's own JSON does:
+// YYYY-MM-DD for a date-only value, RFC3339 for one carrying a time, nil when the
+// field is absent or unparseable. A string rather than a timestamp because the
+// board's urgency tiers compare the date-only form against today.
+func dateString(date *libtime.DateOrDateTime) *string {
+	if date == nil {
+		return nil
+	}
+	rendered := date.String()
+	if rendered == "" {
+		return nil
+	}
+	return &rendered
+}
+
+// nonNilStrings returns values, or an empty non-nil slice, so a projection field
+// serialises as [] rather than null.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+// nonNilOpenQuestions is the same []-not-null guarantee for the Open Questions
+// list.
+func nonNilOpenQuestions(
+	questions []domain.OpenQuestion,
+) []domain.OpenQuestion {
+	if questions == nil {
+		return []domain.OpenQuestion{}
+	}
+	return questions
+}
+
+// openQuestionsFromContent parses a page body's Open Questions section into the
+// projection's shape. It is the incremental path's equivalent of the page
+// index's pre-parsed Entry.OpenQuestions, which the full build reuses rather than
+// re-reading the body.
+func openQuestionsFromContent(
+	ctx context.Context,
+	content domain.Content,
+) ([]domain.OpenQuestion, error) {
+	items, err := storage.ParseOpenQuestions(ctx, string(content))
+	if err != nil {
+		return nil, err
+	}
+	questions := make([]domain.OpenQuestion, 0, len(items))
+	for _, item := range items {
+		questions = append(
+			questions,
+			domain.OpenQuestion{Index: item.Index, Text: item.Question},
+		)
+	}
+	return questions, nil
 }
 
 func (i *Index) buildGoals(

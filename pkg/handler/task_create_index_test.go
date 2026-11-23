@@ -229,8 +229,8 @@ var _ = Describe("Index.UpsertTask", func() {
 	It(
 		"replaces the entry instead of adding a second one, and drops the stale set membership",
 		func() {
-			index.UpsertTask(page("in_progress"))
-			index.UpsertTask(page("completed"))
+			index.UpsertTask(ctx, page("in_progress"))
+			index.UpsertTask(ctx, page("completed"))
 
 			task, found, _ := index.GetTask("probe-1")
 			Expect(found).To(BeTrue())
@@ -265,7 +265,7 @@ var _ = Describe("Index.UpsertTask", func() {
 			Expect(index.Build(ctx, newTestStore())).To(Succeed())
 			Expect(index.Readiness().Warnings).To(Equal(2))
 
-			index.UpsertTask(domain.NewPage(
+			index.UpsertTask(ctx, domain.NewPage(
 				map[string]any{"task_identifier": "probe-1", "status": "in_progress"},
 				domain.FileMetadata{
 					Name:     "Probe Alpha",
@@ -286,7 +286,7 @@ var _ = Describe("Index.UpsertTask", func() {
 		// must not admit it, or the two indexing paths would disagree about what is
 		// addressable — and a created task would be resolvable by an API that would
 		// not list it.
-		index.UpsertTask(page("nonsense"))
+		index.UpsertTask(ctx, page("nonsense"))
 		_, found, _ := index.GetTask("probe-1")
 		Expect(found).To(BeFalse())
 	})
@@ -304,7 +304,7 @@ var _ = Describe("Index.UpsertTask", func() {
 			filepath.Join(vaultPath, "25 Tasks", "Probe Alpha.md"), []byte(body), 0o600,
 		)).To(Succeed())
 
-		index.UpsertTask(domain.NewPage(
+		index.UpsertTask(ctx, domain.NewPage(
 			map[string]any{
 				"task_identifier": "probe-1",
 				"status":          "in_progress",

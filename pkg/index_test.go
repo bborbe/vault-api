@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bborbe/vault-cli/pkg/domain"
 	"github.com/bborbe/vault-cli/pkg/storage"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -238,31 +239,35 @@ var _ = Describe("Index", func() {
 		Expect(warnings).To(Equal(3))
 		Expect(tasks).To(Equal([]vaultapi.TaskItem{
 			{
-				ID:         "11111111-1111-1111-1111-111111111111",
-				Title:      "Alpha",
-				Path:       "25 Tasks/Alpha.md",
-				Status:     "in_progress",
-				Phase:      "execution",
-				TaskType:   "llm",
-				ShortID:    "abc",
-				Stage:      "dev",
-				Assignee:   "bborbe",
-				Goals:      []string{"[[Some Goal]]"},
-				Cluster:    &cluster,
-				Flag:       true,
-				Vault:      "test",
-				CurrentJob: "job-1",
-				PRState:    "open",
-				UpdatedAt:  modified["Alpha"],
+				ID:            "11111111-1111-1111-1111-111111111111",
+				Title:         "Alpha",
+				Path:          "25 Tasks/Alpha.md",
+				Status:        "in_progress",
+				Phase:         "execution",
+				TaskType:      "llm",
+				ShortID:       "abc",
+				Stage:         "dev",
+				Assignee:      "bborbe",
+				Goals:         []string{"[[Some Goal]]"},
+				Cluster:       &cluster,
+				Flag:          true,
+				Vault:         "test",
+				CurrentJob:    "job-1",
+				PRState:       "open",
+				UpdatedAt:     modified["Alpha"],
+				BlockedBy:     []string{},
+				OpenQuestions: []domain.OpenQuestion{},
 			},
 			{
-				ID:        "beta-task",
-				Title:     "Beta Task",
-				Path:      "25 Tasks/Beta Task.md",
-				Status:    "next",
-				Goals:     []string{},
-				Vault:     "test",
-				UpdatedAt: modified["Beta Task"],
+				ID:            "beta-task",
+				Title:         "Beta Task",
+				Path:          "25 Tasks/Beta Task.md",
+				Status:        "next",
+				Goals:         []string{},
+				Vault:         "test",
+				UpdatedAt:     modified["Beta Task"],
+				BlockedBy:     []string{},
+				OpenQuestions: []domain.OpenQuestion{},
 			},
 		}))
 		_, _, invalid := index.GetTask("Bad Status")
