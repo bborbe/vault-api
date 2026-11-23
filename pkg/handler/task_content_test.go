@@ -507,6 +507,19 @@ var _ = Describe("Task content endpoints", func() {
 			)
 			Expect(decode(recorder)["body"]).To(Equal("only this\n"))
 		})
+
+		// The same defect as create: this route carries a whole markdown body, so
+		// it cannot share the 64 KiB cap sized for a phase name.
+		It("accepts a body far past the 64 KiB write-endpoint cap", func() {
+			seed("task_identifier: task-1\nstatus: in_progress\n")
+			body := strings.Repeat("a", 200*1024)
+			payload, err := json.Marshal(map[string]any{"body": body})
+			Expect(err).To(BeNil())
+			recorder := call(http.MethodPut, "/api/v1/tasks/task-1/content", string(payload))
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring(body))
+		})
 	})
 
 	Describe("the read counter", func() {
@@ -626,6 +639,41 @@ var _ = Describe("Task content endpoints", func() {
 			Expect(writer.calls[0].path).To(Equal("25 Tasks/Bravo.md"))
 			Expect(writer.calls[0].content).To(ContainSubstring("task_identifier:"))
 			Expect(decode(recorder)["id"]).NotTo(BeEmpty())
+		})
+
+		// A recurring task's rendered template is a whole document, not a
+		// frontmatter tweak: the rebuild-nuke-cluster schedule's body is ~199 KB.
+		// Under the shared 64 KiB write-endpoint cap every such create was
+		// refused with `400 invalid_body: http: request body too large`, so the
+		// task never materialized and the only witness was a single 400 in the
+		// consuming controller's log. The create route therefore has its own cap.
+		It("accepts a task body far past the 64 KiB write-endpoint cap", func() {
+			Expect(index.Build(ctx, store())).To(Succeed())
+			body := strings.Repeat("a", 200*1024)
+			payload, err := json.Marshal(map[string]any{
+				"title":       "Rebuild Nuke Cluster - 2026W47-sun",
+				"frontmatter": map[string]any{"status": "in_progress"},
+				"body":        body,
+			})
+			Expect(err).To(BeNil())
+			recorder := call(http.MethodPost, "/api/v1/tasks", string(payload))
+			Expect(recorder.Code).To(Equal(http.StatusCreated))
+			Expect(writer.calls).To(HaveLen(1))
+			Expect(writer.calls[0].content).To(ContainSubstring(body))
+		})
+
+		It("still refuses a create body past the create cap", func() {
+			Expect(index.Build(ctx, store())).To(Succeed())
+			payload, err := json.Marshal(map[string]any{
+				"title":       "Huge",
+				"frontmatter": map[string]any{"status": "in_progress"},
+				"body":        strings.Repeat("a", 5*1024*1024),
+			})
+			Expect(err).To(BeNil())
+			recorder := call(http.MethodPost, "/api/v1/tasks", string(payload))
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Expect(decode(recorder)["error"]).To(Equal("invalid_body"))
+			Expect(writer.calls).To(BeEmpty())
 		})
 
 		// The create route shares the PATCH allowlist, so it accepts the pipeline

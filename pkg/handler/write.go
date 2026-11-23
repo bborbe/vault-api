@@ -30,6 +30,18 @@ import (
 // status name and an approver, so anything approaching this is a mistake.
 const maxWriteBodyBytes = 64 * 1024
 
+// maxTaskBodyBytes caps a request body that carries a task's whole markdown
+// content — POST /api/v1/tasks and PUT /api/v1/tasks/{id}/content. It cannot
+// share maxWriteBodyBytes: that cap is sized for a phase name, a status name and
+// an approver, while a task body is an entire document. A recurring task's
+// rendered template routinely runs past 64 KiB — the rebuild-nuke-cluster
+// schedule's body is ~199 KB — and under the shared cap every such create was
+// refused with `400 invalid_body: http: request body too large`, so the task
+// never materialized and the only witness was a single 400 in the consuming
+// controller's log. 4 MiB leaves room for a long task document while staying far
+// below maxMergeBodyBytes, which carries three complete files.
+const maxTaskBodyBytes = 4 * 1024 * 1024
+
 // publishTimeout bounds the change-event publish on the request path. The file is
 // already in git by then, so waiting on a broker can only delay a response whose
 // outcome is decided.
