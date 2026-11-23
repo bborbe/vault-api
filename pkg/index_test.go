@@ -312,7 +312,7 @@ var _ = Describe("Index", func() {
 		writeFile(
 			goalsDir,
 			"A Goal",
-			"---\npage_type: goal\nstatus: next\nphase: planning\nthemes:\n    - '[[Leverage Autonomous Agents]]'\n---\n\nBody\n",
+			"---\npage_type: goal\nstatus: next\nphase: planning\nassignee: bborbe\npriority: 2\nthemes:\n    - '[[Leverage Autonomous Agents]]'\n---\n\nBody\n",
 		)
 		Expect(index.Build(ctx, store)).To(Succeed())
 
@@ -322,6 +322,8 @@ var _ = Describe("Index", func() {
 		Expect(goals[0].Title).To(Equal("A Goal"))
 		Expect(goals[0].Status).To(Equal("next"))
 		Expect(goals[0].Phase).To(Equal("planning"))
+		Expect(goals[0].Assignee).To(Equal("bborbe"))
+		Expect(goals[0].Priority).To(Equal(2))
 		Expect(goals[0].Themes).To(Equal([]string{"[[Leverage Autonomous Agents]]"}))
 		Expect(goals[0].Vault).To(Equal("test"))
 
