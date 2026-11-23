@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.33.0
 
 - feat: **`GET /api/v1/tasks` carries the fields the board renders — `blocked_by`, `priority`, `due_date`, `planned_date`, `claude_session_id`, `jira`, `mode` and `open_questions` — so a consumer can serve the board from one list request instead of one detail call per row.** The projection carried 13 keys while the board renders nine more, which left a consumer choosing between a rendering regression and an N+1 over the whole vault; `GET /api/v1/tasks/{id}` has the missing values but only one page at a time. The new fields are projected from frontmatter the page index has already parsed, so carrying them costs no additional read: `open_questions` comes from the index's pre-parsed `Entry.OpenQuestions` on the full build, and the incremental `UpsertTask` path parses the same section from the body it already holds so the two indexing paths still describe a page identically. The two list-valued fields are always `[]` rather than `null` and the optional scalars are always present (`null` when absent), so a consumer never has to tell "absent" from "empty"; the dates use vault-cli's own rendering (`YYYY-MM-DD`, or RFC3339 when the value carries a time).
 
