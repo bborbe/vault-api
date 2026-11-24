@@ -108,7 +108,7 @@ var _ = Describe("Reopening a probe's record", func() {
 		clock.SetNow(libtime.NewDateTime(2026, 11, 9, 10, 14, 39, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, index, probeStore(), secret, vaultPath, "tasks", "openclaw", writer, clock,
-			publisher, &fakeRefClient{},
+			publisher, &fakeRefClient{}, nil,
 		)
 	})
 

@@ -77,7 +77,7 @@ var _ = Describe("Task content endpoints", func() {
 		clock.SetNow(libtime.NewDateTime(2026, 10, 25, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", writer, clock,
-			publisher, &fakeRefClient{},
+			publisher, &fakeRefClient{}, nil,
 		)
 	})
 
@@ -548,7 +548,7 @@ var _ = Describe("Task content endpoints", func() {
 				writer,
 				libtime.NewCurrentDateTime(),
 				&recordingPublisher{},
-				&fakeRefClient{},
+				&fakeRefClient{}, nil,
 			)
 			request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1", nil)
 			request.Header.Set("X-Gateway-Secret", secret)
@@ -1139,7 +1139,7 @@ var _ = Describe("Task content read at a ref", func() {
 
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", &fakeWriter{},
-			libtime.NewCurrentDateTime(), &recordingPublisher{}, &fakeRefClient{},
+			libtime.NewCurrentDateTime(), &recordingPublisher{}, &fakeRefClient{}, nil,
 		)
 
 		runGit("init", "-q")

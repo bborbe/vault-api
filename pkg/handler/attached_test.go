@@ -99,7 +99,7 @@ var _ = Describe("Multi-vault task reads", func() {
 		clock.SetNow(libtime.NewDateTime(2026, 11, 23, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, primary, newTestStore(), secret, primaryRoot, "25 Tasks", "private-personal",
-			&fakeWriter{}, clock, &recordingPublisher{}, &fakeRefClient{},
+			&fakeWriter{}, clock, &recordingPublisher{}, &fakeRefClient{}, nil,
 		)
 	})
 

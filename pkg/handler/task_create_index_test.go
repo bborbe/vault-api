@@ -85,7 +85,7 @@ var _ = Describe("Create then address the created task", func() {
 		clock.SetNow(libtime.NewDateTime(2026, 11, 9, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", writer, clock,
-			&recordingPublisher{}, &fakeRefClient{},
+			&recordingPublisher{}, &fakeRefClient{}, nil,
 		)
 	})
 

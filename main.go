@@ -166,6 +166,35 @@ func (a *application) attachedVaults(ctx context.Context) ([]attachedVault, erro
 	return attached, nil
 }
 
+// refreshLinks keeps every vault's page/link index current. The first tick
+// builds each index in full; every later tick is a stat-only walk that re-reads
+// only the files whose size or modification time moved. It runs off the request
+// path, so a page read never waits for a walk it did not need — a read that
+// arrives before the first build finishes builds its own vault through
+// LinkIndex.Ensure instead of failing.
+func (a *application) refreshLinks(links *vaultapi.LinkRegistry) run.Func {
+	return func(ctx context.Context) error {
+		interval := a.RefreshInterval.Duration()
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			for _, index := range links.Indexes() {
+				if err := index.Refresh(ctx); err != nil {
+					glog.Warningf("link index refresh failed: %v", err)
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+		}
+	}
+}
+
 // attachedRefresh keeps one attached vault's index current, and publishes no
 // change events: events stay with the primary.
 //
@@ -284,6 +313,19 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 		index.Attach(extra.index)
 	}
 
+	// The page and backlink surface reads its own index, because the task index
+	// above holds only the three domain directories and no link targets. It is
+	// one index per vault so a caller can name the vault it wants, and it is
+	// built lazily: the refresh loop warms every vault on its first tick and a
+	// page read that arrives sooner builds its own vault on demand.
+	links := vaultapi.NewLinkRegistry(vaultapi.NewLinkIndex(vaultapi.Config{
+		VaultPath: a.VaultPath,
+		VaultName: a.VaultName,
+	}))
+	for _, extra := range attached {
+		links.Attach(vaultapi.NewLinkIndex(extra.cfg))
+	}
+
 	// One producer for both paths: the write handlers publish through this handle and
 	// the pull feed builds its emitter over the same one, so a change reaches the
 	// topic once, published by whichever path saw it first.
@@ -346,9 +388,10 @@ func (a *application) Run(ctx context.Context, _ libsentry.Client) error {
 	runners := []run.Func{
 		a.refresh(index, store, feed, baselineStore),
 		a.publishTaskEvents(taskPublisher),
+		a.refreshLinks(links),
 		libhttp.NewServer(a.Listen, handler.NewHandler(
 			ctx, index, store, a.GatewaySecret, a.VaultPath, a.TasksDir, a.eventVaultName(), writer,
-			libtime.NewCurrentDateTime(), taskPublisher, refs,
+			libtime.NewCurrentDateTime(), taskPublisher, refs, links,
 		)),
 	}
 	for _, extra := range attached {
