@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **`GET /api/v1/pages/{path}` resolves the wikilinks its frontmatter carries.** The page's `links` map was built from the body alone — `LinkTargets` deliberately drops the frontmatter, because the same extraction feeds the link index and `Backlinks` — so a consumer rendering a frontmatter value such as `goals: '[[Self-Serve Drop Zone for Plan Data]]'` had no href for it and emitted a missing-link marker unless the target also appeared in the body. The page read now resolves the frontmatter targets too, while the index and `Backlinks` keep their body-only set: a page that links to another only from its frontmatter is not that page's backlink.
+
 ## v0.37.0
 
 - feat: **`GET /api/v1/goals` and `GET /api/v1/topics` carry `jira`.** `GoalItem` and `TopicItem` projected everything a board card needs except the page's `jira:` value, so a consumer rendering a goal's ticket had to guess it from the title — and a goal whose filename does not lead with the key then showed no ticket at all (29 such pages in `seibert-brogrammers` alone). The field is projected from frontmatter like the other enrichment fields, carried verbatim (bare key or browse URL) and served as `null` rather than omitted when the page declares none, so a consumer reads "no ticket" instead of a missing field.

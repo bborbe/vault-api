@@ -404,9 +404,11 @@ func (i *LinkIndex) openRoot(ctx context.Context) (*os.Root, error) {
 }
 
 // resolveLinks returns the target→relative-path map for every wikilink target
-// the body carries after embed expansion. A target that resolves to the
-// requested page itself maps to pagePath, so a self-link stays on the page the
-// caller asked for rather than jumping to the index's copy of the same name.
+// the page carries after embed expansion — the body's targets plus the ones its
+// frontmatter holds, because the renderer emits a frontmatter wikilink value as
+// an anchor too. A target that resolves to the requested page itself maps to
+// pagePath, so a self-link stays on the page the caller asked for rather than
+// jumping to the index's copy of the same name.
 func (i *LinkIndex) resolveLinks(
 	body string,
 	embeds map[string]string,
@@ -417,7 +419,7 @@ func (i *LinkIndex) resolveLinks(
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	links := map[string]string{}
-	for _, target := range LinkTargets(expanded) {
+	for _, target := range PageLinkTargets(expanded) {
 		if target == pageName {
 			links[target] = pagePath
 			continue
@@ -530,7 +532,38 @@ var (
 // target is the text before the first `|` or `#` with no trimming — so
 // `[[Foo #anchor]]` is not a link to Foo, exactly as Backlinks decides it.
 func LinkTargets(content string) []string {
-	text := linkableText(content)
+	return linkTargetsIn(linkableText(content))
+}
+
+// PageLinkTargets returns every wikilink target a page renderer must resolve:
+// the body's targets, plus the ones the frontmatter carries. The body set is
+// exactly LinkTargets — the set the index and Backlinks use — and the
+// frontmatter set is added here because the renderer emits a frontmatter
+// wikilink value as an anchor too, and the resolver it is handed can only
+// answer for a target this map carries. The two stay separate on purpose: a
+// page that links to another only from its frontmatter is not that page's
+// backlink.
+func PageLinkTargets(content string) []string {
+	body := LinkTargets(content)
+	front := linkTargetsIn(frontmatterBlock(normalizeNewlines(content)))
+	if len(front) == 0 {
+		return body
+	}
+	seen := make(map[string]struct{}, len(body)+len(front))
+	targets := make([]string, 0, len(body)+len(front))
+	for _, target := range append(body, front...) {
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+// linkTargetsIn returns the wikilink targets of an already-filtered text,
+// split at the first `|` or `#` with no trimming and deduplicated in order.
+func linkTargetsIn(text string) []string {
 	seen := map[string]struct{}{}
 	targets := make([]string, 0, 8)
 	for _, match := range linkPattern.FindAllStringSubmatch(text, -1) {
@@ -561,6 +594,24 @@ func linkableText(content string) string {
 	body = fencedBlock.ReplaceAllString(body, "")
 	body = tildeBlock.ReplaceAllString(body, "")
 	return inlineCode.ReplaceAllString(body, "")
+}
+
+// frontmatterBlock returns the YAML text of a leading frontmatter block, or the
+// empty string when the source carries none. It is the mirror of
+// bodyWithoutFrontmatter, which returns the other half.
+func frontmatterBlock(source string) string {
+	if !strings.HasPrefix(source, frontmatterMarker+"\n") {
+		return ""
+	}
+	rest := source[len(frontmatterMarker)+1:]
+	if strings.HasPrefix(rest, frontmatterMarker) {
+		return ""
+	}
+	end := strings.Index(rest, "\n"+frontmatterMarker)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 // normalizeNewlines makes CRLF and LF sources compare equal.
