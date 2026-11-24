@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **a per-vault `LinkIndex` answers "what links to this page" without walking the vault.** The typed surface holds only the task/goal/topic projections, which carry no link targets, so a consumer that needs a page's inbound links had to read and scan every markdown file itself — vault-ui's page view paid 14–27 s per request for exactly that on a 22.5k-file vault. The index holds page name→relative path, each file's extracted link targets and each target's inbound set — **no page bodies** — built lazily on first use and refreshed by a stat-only walk that re-reads only the files whose size or modification time moved. Link-target extraction reproduces `github.com/bborbe/vault-markdown`'s `Backlinks` semantics exactly (frontmatter, fenced blocks and inline code excluded; split at the first `|` or `#` with no trimming; a root-level page linking to itself not counted) and is pinned by an equivalence test over every shape the two can disagree on. The endpoints that serve it, and the refresh wiring, land in the next release.
+
 ## v0.35.0
 
 - feat: **`GET /api/v1/tasks` carries `task_identifier_previous`.** `TaskItem` projected the current identifier (`ID`) but not the predecessor a re-addressed page records, so a consumer holding only the listing could answer "which file carries this identifier" for the current key and never for the alias. The field is projected from frontmatter like the other board fields and is empty when the page was never re-addressed — an absent predecessor stays distinguishable from an empty one only in that both mean "no alias".
