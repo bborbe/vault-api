@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.36.0
 
 - feat: **`GET /api/v1/pages/{path}` and `GET /api/v1/pages/{path}/backlinks` serve a generic vault page and its inbound links**, on the link index the previous release added. `GET /api/v1/pages/{path}` returns the page body plus the resolved `links` (target → relative path) and `embeds` (target → body) a renderer needs, so a consumer renders a page from one file read instead of walking the vault; `GET /api/v1/pages/{path}/backlinks` returns the inbound set. Both take `?vault=` (default: the primary), so a `-multi-vault` instance answers for any vault it serves. Against the live vault a page read answers in ~1 ms, and the inbound sets reproduce `vault-markdown`'s `Backlinks` exactly for all 1,149 entries across a 10-page fixture.
 
