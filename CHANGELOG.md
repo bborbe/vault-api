@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.37.2
 
 - chore: remove stale vulnerability ignore IDs that no longer apply (govulncheck, trivy)
 
