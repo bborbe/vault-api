@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`GET /api/v1/pages/{path}` and `GET /api/v1/pages/{path}/backlinks` serve a generic vault page and its inbound links, so a consumer stops walking the whole vault to render one page.** The typed surface covered only the task/goal/topic projections, which hold no non-domain page and no link targets, so vault-ui's page view re-read a 22.5k-file vault on every request (14–27 s, 3 of 20 requests failing outright). A new per-vault `LinkIndex` holds name→relative-path, each file's link targets and each target's inbound set — **no page bodies** — built lazily and refreshed on the existing tick by a stat-only walk that re-reads only the files whose size or modification time moved. `GET /api/v1/pages/{path}` returns the page body plus the resolved `links` and embedded-page `embeds` a renderer needs (one file read per request, measured ~1 ms); `GET /api/v1/pages/{path}/backlinks` returns the inbound set, byte-identical to `vault-markdown`'s `Backlinks` for all 1,149 entries across a 10-page fixture. Both take `?vault=` (default: the primary), so a `-multi-vault` instance answers for any vault it serves. Link-target extraction is pinned to `Backlinks` semantics by an equivalence test over the shapes the two can disagree on (alias, anchor, embed, frontmatter, fence, inline code, a space before an anchor, a duplicate basename, a root-level self-link).
+
 ## v0.35.0
 
 - feat: **`GET /api/v1/tasks` carries `task_identifier_previous`.** `TaskItem` projected the current identifier (`ID`) but not the predecessor a re-addressed page records, so a consumer holding only the listing could answer "which file carries this identifier" for the current key and never for the alias. The field is projected from frontmatter like the other board fields and is empty when the page was never re-addressed — an absent predecessor stays distinguishable from an empty one only in that both mean "no alias".

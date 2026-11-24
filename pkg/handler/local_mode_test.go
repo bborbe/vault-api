@@ -58,7 +58,7 @@ var _ = Describe("Local-mode read endpoints", func() {
 		clock.SetNow(libtime.NewDateTime(2026, 11, 21, 12, 0, 0, 0, time.UTC))
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test", &fakeWriter{},
-			clock, &recordingPublisher{}, &fakeRefClient{},
+			clock, &recordingPublisher{}, &fakeRefClient{}, nil,
 		)
 	})
 

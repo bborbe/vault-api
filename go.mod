@@ -6,7 +6,7 @@ require (
 	github.com/IBM/sarama v1.61.1
 	github.com/bborbe/agent v0.148.2
 	github.com/bborbe/cqrs v0.6.16
-	github.com/bborbe/errors v1.6.7
+	github.com/bborbe/errors v1.7.0
 	github.com/bborbe/http v1.26.34
 	github.com/bborbe/kafka v1.29.14
 	github.com/bborbe/log v1.7.9
@@ -15,6 +15,7 @@ require (
 	github.com/bborbe/service v1.11.4
 	github.com/bborbe/time v1.27.28
 	github.com/bborbe/vault-cli v0.197.0
+	github.com/bborbe/vault-markdown v0.1.0
 	github.com/golang/glog v1.2.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
@@ -73,6 +74,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/spf13/pflag v1.1.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	github.com/yuin/goldmark v1.8.7 // indirect
 	go.etcd.io/bbolt v1.5.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect

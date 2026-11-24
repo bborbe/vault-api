@@ -79,7 +79,7 @@ var _ = Describe("Merge endpoint — the 21 mixed shapes from the incident", fun
 		router = handler.NewHandler(
 			ctx, index, newTestStore(), secret, vaultPath, "25 Tasks", "test",
 			&fakeWriter{}, libtime.NewCurrentDateTime(), &recordingPublisher{},
-			&fakeRefClient{},
+			&fakeRefClient{}, nil,
 		)
 	})
 
