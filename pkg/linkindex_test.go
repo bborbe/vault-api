@@ -189,6 +189,37 @@ var _ = Describe("LinkIndex", func() {
 			Expect(page.Embeds["Embedded Task"]).NotTo(ContainSubstring("page_type"))
 		})
 
+		It("resolves a wikilink carried only by the frontmatter", func() {
+			write("24 Goals/Target Goal.md", "Goal body.\n")
+			write("21 Themes/Theme.md", "Theme body.\n")
+			write(
+				"25 Tasks/Page.md",
+				"---\n"+
+					"goals: '[[Target Goal]]'\n"+
+					"themes:\n"+
+					"  - '[[Theme]]'\n"+
+					"tags: [[Theme]] [[Target Goal]]\n"+
+					"---\n\nNo links in the body.\n",
+			)
+
+			page, err := index.Page(ctx, "25 Tasks/Page.md")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page.Links).To(HaveKeyWithValue("Target Goal", "24 Goals/Target Goal.md"))
+			Expect(page.Links).To(HaveKeyWithValue("Theme", "21 Themes/Theme.md"))
+		})
+
+		It("still reports a frontmatter-only link as no backlink", func() {
+			write("24 Goals/Target Goal.md", "Goal body.\n")
+			write(
+				"25 Tasks/Page.md",
+				"---\ngoals: '[[Target Goal]]'\n---\n\nNo links in the body.\n",
+			)
+
+			backlinks, err := index.Backlinks(ctx, "24 Goals/Target Goal.md")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(backlinks).To(BeEmpty())
+		})
+
 		It("resolves links carried by an embedded body", func() {
 			write("24 Goals/Target Goal.md", "Goal body.\n")
 			write("25 Tasks/Embedded Task.md", "Embedded links [[Target Goal]].\n")
@@ -285,6 +316,23 @@ var _ = Describe("LinkIndex", func() {
 		It("ignores a link inside frontmatter, code or a fence", func() {
 			body := "---\nlink: '[[Front]]'\n---\n\n`[[Inline]]`\n\n```\n[[Fenced]]\n```\n\n[[Real]]\n"
 			Expect(vaultapi.LinkTargets(body)).To(Equal([]string{"Real"}))
+		})
+	})
+
+	Describe("PageLinkTargets", func() {
+		It("adds the frontmatter targets to the body's", func() {
+			content := "---\n" +
+				"goals: '[[Front]]'\n" +
+				"themes:\n" +
+				"  - '[[Other]]'\n" +
+				"tags: [[Front]] [[Other]]\n" +
+				"---\n\n[[Body]]\n"
+			Expect(vaultapi.PageLinkTargets(content)).
+				To(Equal([]string{"Body", "Front", "Other"}))
+		})
+
+		It("keeps the body targets alone when there is no frontmatter", func() {
+			Expect(vaultapi.PageLinkTargets("[[A]] [[B]]")).To(Equal([]string{"A", "B"}))
 		})
 	})
 })
