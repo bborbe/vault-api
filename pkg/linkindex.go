@@ -100,7 +100,12 @@ func NewLinkIndex(cfg Config) *LinkIndex {
 func (i *LinkIndex) Refresh(ctx context.Context) error {
 	i.buildMu.Lock()
 	defer i.buildMu.Unlock()
+	return i.refreshLocked(ctx)
+}
 
+// refreshLocked is one build. The caller holds buildMu, which is what makes
+// Ensure's second Built() check authoritative.
+func (i *LinkIndex) refreshLocked(ctx context.Context) error {
 	files, err := i.readTree(ctx, i.snapshot().files)
 	if err != nil {
 		return err
@@ -278,13 +283,19 @@ func (i *LinkIndex) Built() bool {
 }
 
 // Ensure builds the index on first use, so the first page view after a restart
-// is correct without the caller having run Refresh first. Concurrent callers
-// share one build through Refresh's own lock.
+// is correct without the caller having run Refresh first. Concurrent cold
+// callers share one build: the second check runs under buildMu, which a
+// concurrent build holds.
 func (i *LinkIndex) Ensure(ctx context.Context) error {
 	if i.Built() {
 		return nil
 	}
-	return i.Refresh(ctx)
+	i.buildMu.Lock()
+	defer i.buildMu.Unlock()
+	if i.Built() {
+		return nil
+	}
+	return i.refreshLocked(ctx)
 }
 
 // Page returns one page's body plus the links and embeds a renderer needs. The
