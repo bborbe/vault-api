@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.37.0
 
 - feat: **`GET /api/v1/goals` and `GET /api/v1/topics` carry `jira`.** `GoalItem` and `TopicItem` projected everything a board card needs except the page's `jira:` value, so a consumer rendering a goal's ticket had to guess it from the title — and a goal whose filename does not lead with the key then showed no ticket at all (29 such pages in `seibert-brogrammers` alone). The field is projected from frontmatter like the other enrichment fields, carried verbatim (bare key or browse URL) and served as `null` rather than omitted when the page declares none, so a consumer reads "no ticket" instead of a missing field.
 
