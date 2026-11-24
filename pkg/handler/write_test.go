@@ -157,7 +157,7 @@ var _ = Describe("Write endpoints", func() {
 			writer,
 			clock,
 			published,
-			&fakeRefClient{},
+			&fakeRefClient{}, nil,
 		)
 	})
 
@@ -507,7 +507,7 @@ var _ = Describe("Write endpoints", func() {
 				writer,
 				zero,
 				published,
-				&fakeRefClient{},
+				&fakeRefClient{}, nil,
 			)
 			request := httptest.NewRequest(
 				http.MethodPost,

@@ -49,6 +49,7 @@ func NewHandler(
 	clock libtime.CurrentDateTime,
 	taskPublisher publisher.TaskPublisher,
 	refs gitrest.RefClient,
+	links *vaultapi.LinkRegistry,
 ) http.Handler {
 	deps := writeDeps{
 		index:         index,
@@ -105,6 +106,7 @@ func NewHandler(
 	api.Path("/topics/{id}").Methods(http.MethodGet).HandlerFunc(handleGetTopic(index))
 
 	registerClaimRoutes(api, ClaimDeps{Refs: refs, Clock: clock}, index)
+	registerPageRoutes(api, PageDeps{Links: links})
 
 	return router
 }
