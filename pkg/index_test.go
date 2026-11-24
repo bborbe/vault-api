@@ -334,6 +334,37 @@ var _ = Describe("Index", func() {
 		Expect(goal.ID).To(Equal("a-goal"))
 	})
 
+	It("carries a goal's jira key and leaves it nil when the page declares none", func() {
+		writeFile(
+			goalsDir,
+			"Keyed Goal",
+			"---\npage_type: goal\nstatus: next\njira: BRO-22521\n---\n\nBody\n",
+		)
+		writeFile(
+			goalsDir,
+			"Unkeyed Goal",
+			"---\npage_type: goal\nstatus: next\n---\n\nBody\n",
+		)
+		Expect(index.Build(ctx, store)).To(Succeed())
+
+		goals, warnings, _ := index.QueryGoals()
+		Expect(warnings).To(Equal(0))
+		Expect(goals).To(HaveLen(2))
+
+		byTitle := map[string]vaultapi.GoalItem{}
+		for _, g := range goals {
+			byTitle[g.Title] = g
+		}
+		// A goal's ticket must be readable from this projection: the card badges
+		// from it, and a title that does not lead with the key carries nothing to
+		// fall back to.
+		Expect(byTitle["Keyed Goal"].Jira).NotTo(BeNil())
+		Expect(*byTitle["Keyed Goal"].Jira).To(Equal("BRO-22521"))
+		// Nil, not empty: the wire serves the key as null so a consumer can tell
+		// "this goal declares no ticket" from "this build has no such field".
+		Expect(byTitle["Unkeyed Goal"].Jira).To(BeNil())
+	})
+
 	It("counts open tasks per frontmatter stage and task_type, refreshing on every build", func() {
 		writeFile(
 			tasksDir,

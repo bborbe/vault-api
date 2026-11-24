@@ -721,6 +721,7 @@ func (i *Index) goalItem(page *domain.Page) GoalItem {
 		DeferDate: page.GetString("defer_date"),
 		BlockedBy: page.BlockedBy(),
 		FlagSetBy: page.GetString("flag_set_by"),
+		Jira:      optionalString(page.GetString("jira")),
 	}
 }
 
@@ -762,6 +763,7 @@ func (i *Index) topicItem(page *domain.Page) TopicItem {
 		DeferDate: page.GetString("defer_date"),
 		BlockedBy: page.BlockedBy(),
 		FlagSetBy: page.GetString("flag_set_by"),
+		Jira:      optionalString(page.GetString("jira")),
 	}
 }
 
