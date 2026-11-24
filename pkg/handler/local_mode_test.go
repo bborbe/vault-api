@@ -241,7 +241,8 @@ var _ = Describe("Local-mode read endpoints", func() {
 		write(goalsDir, "Flagged Goal", "status: in_progress\nflag: true\n"+
 			"claude_session_id: 11111111-1111-1111-1111-111111111111\n"+
 			"role: manager\nmode: headless\ndefer_date: \"2999-01-01\"\n"+
-			"flag_set_by: operator\nblocked_by:\n  - '[[Some Blocker]]'\n")
+			"flag_set_by: operator\njira: BRO-22521\n"+
+			"blocked_by:\n  - '[[Some Blocker]]'\n")
 		write(goalsDir, "Quiet Goal", "status: in_progress\n")
 
 		Expect(index.Build(ctx, store())).To(Succeed())
@@ -262,6 +263,27 @@ var _ = Describe("Local-mode read endpoints", func() {
 		Expect(item["defer_date"]).To(Equal("2999-01-01"))
 		Expect(item["flag_set_by"]).To(Equal("operator"))
 		Expect(item["blocked_by"]).To(ConsistOf("[[Some Blocker]]"))
+		// A goal's ticket rides the same projection: the card badges from it, and
+		// a goal whose filename does not lead with the key has nothing else to
+		// badge from.
+		Expect(item["jira"]).To(Equal("BRO-22521"))
+
+		// The quiet goal declares no jira, and the key is still served — null, not
+		// absent — so a consumer reads "no ticket" rather than a missing field.
+		allItems, ok := decode(call("/api/v1/goals"))["items"].([]any)
+		Expect(ok).To(BeTrue())
+		Expect(allItems).To(HaveLen(2))
+		var quiet map[string]any
+		for _, raw := range allItems {
+			entry, isMap := raw.(map[string]any)
+			Expect(isMap).To(BeTrue())
+			if entry["title"] == "Quiet Goal" {
+				quiet = entry
+			}
+		}
+		Expect(quiet).NotTo(BeNil())
+		Expect(quiet).To(HaveKey("jira"))
+		Expect(quiet["jira"]).To(BeNil())
 	})
 
 	It("serves the flag filter and the session id on /api/v1/goals", func() {
@@ -290,7 +312,7 @@ var _ = Describe("Local-mode read endpoints", func() {
 
 	It("serves the flag filter on /api/v1/topics and one topic by id", func() {
 		write(topicsDir, "Flagged Topic", "page_type: topic\nstatus: in_progress\nflag: true\n"+
-			"claude_session_id: 22222222-2222-2222-2222-222222222222\n")
+			"claude_session_id: 22222222-2222-2222-2222-222222222222\njira: BRO-22051\n")
 		write(topicsDir, "Quiet Topic", "page_type: topic\nstatus: in_progress\n")
 		Expect(index.Build(ctx, store())).To(Succeed())
 
@@ -304,6 +326,10 @@ var _ = Describe("Local-mode read endpoints", func() {
 		Expect(item["flag"]).To(Equal(true))
 		Expect(item["claude_session_id"]).
 			To(Equal("22222222-2222-2222-2222-222222222222"))
+		// Topics carry the key on the same terms as goals, even though no page in
+		// the vaults declares one today: a consumer's card slot is already wired
+		// to it, and an absent key would read as a build without the field.
+		Expect(item["jira"]).To(Equal("BRO-22051"))
 
 		byID := call("/api/v1/topics/" + "flagged-topic")
 		Expect(byID.Code).To(Equal(http.StatusOK))

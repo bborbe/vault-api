@@ -138,6 +138,12 @@ type GoalItem struct {
 	// value here — it means the page carries no provenance, which a consumer may
 	// treat as a refusal — so it is not omitted.
 	FlagSetBy string `json:"flag_set_by"`
+	// Jira is the page's own `jira:` value, carried verbatim and null when
+	// absent, on the same terms as TaskItem.Jira. Without it a goal's ticket is
+	// reachable only by reading the page, so a consumer rendering the goal's
+	// card has to guess it from the title — and a title that does not lead with
+	// the key then shows no ticket at all.
+	Jira *string `json:"jira"`
 }
 
 // TopicItem is the typed projection of one topic page. It is served by
@@ -166,6 +172,11 @@ type TopicItem struct {
 	DeferDate string   `json:"defer_date,omitempty"`
 	BlockedBy []string `json:"blocked_by,omitempty"`
 	FlagSetBy string   `json:"flag_set_by"`
+	// Jira is the topic's own `jira:` value, on the same terms as GoalItem.Jira.
+	// No topic page declares one today, so it reads null everywhere — the key is
+	// served anyway, because a consumer's card slot is already wired to it and
+	// absence would read as "this build has no such field".
+	Jira *string `json:"jira"`
 }
 
 // ListResponse is the envelope every list endpoint returns. Total is the number

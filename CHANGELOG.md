@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **`GET /api/v1/goals` and `GET /api/v1/topics` carry `jira`.** `GoalItem` and `TopicItem` projected everything a board card needs except the page's `jira:` value, so a consumer rendering a goal's ticket had to guess it from the title — and a goal whose filename does not lead with the key then showed no ticket at all (29 such pages in `seibert-brogrammers` alone). The field is projected from frontmatter like the other enrichment fields, carried verbatim (bare key or browse URL) and served as `null` rather than omitted when the page declares none, so a consumer reads "no ticket" instead of a missing field.
+
 ## v0.36.0
 
 - feat: **`GET /api/v1/pages/{path}` and `GET /api/v1/pages/{path}/backlinks` serve a generic vault page and its inbound links**, on the link index the previous release added. `GET /api/v1/pages/{path}` returns the page body plus the resolved `links` (target → relative path) and `embeds` (target → body) a renderer needs, so a consumer renders a page from one file read instead of walking the vault; `GET /api/v1/pages/{path}/backlinks` returns the inbound set. Both take `?vault=` (default: the primary), so a `-multi-vault` instance answers for any vault it serves. Against the live vault a page read answers in ~1 ms, and the inbound sets reproduce `vault-markdown`'s `Backlinks` exactly for all 1,149 entries across a 10-page fixture.
