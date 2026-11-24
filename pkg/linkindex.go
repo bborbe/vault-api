@@ -263,8 +263,8 @@ func (i *LinkIndex) snapshot() linkSnapshot {
 func (i *LinkIndex) VaultName() string { return i.cfg.VaultName }
 
 // IsNotFound reports whether err means the page cannot be served: it is absent,
-// it escapes the vault through a symlink, or its path is not a markdown path
-// inside the vault. The HTTP layer maps exactly this to a 404.
+// its path is not a markdown path inside the vault, or it is reached through a
+// symlink that leaves the vault. The HTTP layer maps exactly this to a 404.
 func IsNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -272,7 +272,13 @@ func IsNotFound(err error) bool {
 	if stderrors.Is(err, fs.ErrNotExist) {
 		return true
 	}
-	return strings.Contains(err.Error(), "symlink outside vault")
+	message := err.Error()
+	// os.Root refuses an escaping path with its own sentinel rather than
+	// fs.ErrNotExist, and the sentinel is not exported, so the message is the
+	// only handle. Both spellings are checked: the root's escape refusal, and
+	// the one this package used before the read moved onto os.Root.
+	return strings.Contains(message, "escapes from parent") ||
+		strings.Contains(message, "symlink outside vault")
 }
 
 // Built reports whether a build has completed.
@@ -305,16 +311,22 @@ func (i *LinkIndex) Page(ctx context.Context, pagePath string) (*PageContent, er
 	if err := i.Ensure(ctx); err != nil {
 		return nil, err
 	}
-	full, err := i.vaultFile(pagePath)
+	rel, err := i.pageRelPath(pagePath)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := readPageFile(ctx, full)
+	root, err := i.openRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+
+	raw, err := readPageFile(ctx, root, rel)
 	if err != nil {
 		return nil, err
 	}
 	name := strings.TrimSuffix(path.Base(pagePath), ".md")
-	embeds := i.expandEmbeds(ctx, raw)
+	embeds := i.expandEmbeds(ctx, root, raw)
 	links := i.resolveLinks(raw, embeds, name, pagePath)
 	return &PageContent{
 		Vault:   i.cfg.VaultName,
@@ -334,14 +346,19 @@ func (i *LinkIndex) Backlinks(ctx context.Context, pagePath string) ([]BacklinkR
 	if err := i.Ensure(ctx); err != nil {
 		return nil, err
 	}
-	full, err := i.vaultFile(pagePath)
+	rel, err := i.pageRelPath(pagePath)
 	if err != nil {
 		return nil, err
 	}
+	root, err := i.openRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
 	// The page must exist for its backlinks to be a meaningful answer: a typo in
 	// the path would otherwise read as "nobody links to this", which is a wrong
 	// answer where a 404 is the right one.
-	if err := statPage(ctx, full); err != nil {
+	if err := statPage(ctx, root, rel); err != nil {
 		return nil, err
 	}
 	name := strings.TrimSuffix(path.Base(pagePath), ".md")
@@ -358,10 +375,14 @@ func (i *LinkIndex) Backlinks(ctx context.Context, pagePath string) ([]BacklinkR
 	return refs, nil
 }
 
-// vaultFile validates a vault-relative page path and returns its absolute path.
-// A path that is empty, absolute, escapes the vault, or does not end in .md is
-// rejected, which is the same guard the HTTP route needs.
-func (i *LinkIndex) vaultFile(pagePath string) (string, error) {
+// pageRelPath validates a vault-relative page path and returns it in the slash
+// form os.Root takes. A path that is empty, absolute, escapes the vault, or does
+// not end in .md is rejected, which is the same guard the HTTP route needs.
+//
+// Validation is not the security boundary on its own: the read goes through
+// os.Root, which refuses to follow any symlink that leaves the vault — including
+// one on an intermediate directory, which a path check cannot see.
+func (i *LinkIndex) pageRelPath(pagePath string) (string, error) {
 	if pagePath == "" || strings.HasPrefix(pagePath, "/") || !strings.HasSuffix(pagePath, ".md") {
 		return "", os.ErrNotExist
 	}
@@ -370,7 +391,16 @@ func (i *LinkIndex) vaultFile(pagePath string) (string, error) {
 			return "", os.ErrNotExist
 		}
 	}
-	return filepath.Join(i.cfg.VaultPath, filepath.FromSlash(pagePath)), nil
+	return pagePath, nil
+}
+
+// openRoot opens the vault as an os.Root, so every read below is confined to it.
+func (i *LinkIndex) openRoot(ctx context.Context) (*os.Root, error) {
+	root, err := os.OpenRoot(i.cfg.VaultPath)
+	if err != nil {
+		return nil, errors.Wrap(ctx, err, "open vault root")
+	}
+	return root, nil
 }
 
 // resolveLinks returns the target→relative-path map for every wikilink target
@@ -402,7 +432,11 @@ func (i *LinkIndex) resolveLinks(
 // expandEmbeds returns the body of every page the body embeds on a line of its
 // own. Only the top level expands, mirroring the renderer: an embed inside an
 // inlined body is dropped there, so its body is not needed here.
-func (i *LinkIndex) expandEmbeds(ctx context.Context, body string) map[string]string {
+func (i *LinkIndex) expandEmbeds(
+	ctx context.Context,
+	root *os.Root,
+	body string,
+) map[string]string {
 	embeds := map[string]string{}
 	i.mu.RLock()
 	names := i.names
@@ -416,11 +450,7 @@ func (i *LinkIndex) expandEmbeds(ctx context.Context, body string) map[string]st
 		if !known {
 			continue
 		}
-		full, err := i.vaultFile(rel)
-		if err != nil {
-			continue
-		}
-		raw, err := readPageFile(ctx, full)
+		raw, err := readPageFile(ctx, root, rel)
 		if err != nil {
 			continue
 		}
@@ -465,27 +495,21 @@ func loneEmbedTarget(line string) (string, bool) {
 	return target, true
 }
 
-// statPage reports whether a page exists and may be served, applying the same
-// symlink guard a read does.
-func statPage(ctx context.Context, full string) error {
-	info, err := os.Lstat(full)
-	if err != nil {
-		return errors.Wrap(ctx, err, "lstat page")
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.Errorf(ctx, "symlink outside vault: %s", full)
+// statPage reports whether a page exists and may be served. The stat goes
+// through os.Root, so a page reached through a symlink that leaves the vault —
+// on the file itself or on any directory above it — is refused here.
+func statPage(ctx context.Context, root *os.Root, rel string) error {
+	if _, err := root.Stat(rel); err != nil {
+		return errors.Wrap(ctx, err, "stat page")
 	}
 	return nil
 }
 
-// readPageFile reads one page file, refusing a symlink so a page cannot escape
-// the vault through one. The bytes are returned as they are: a page without
+// readPageFile reads one page file through os.Root, which refuses any symlink
+// that leaves the vault. The bytes are returned as they are: a page without
 // frontmatter is a page, not an error.
-func readPageFile(ctx context.Context, full string) (string, error) {
-	if err := statPage(ctx, full); err != nil {
-		return "", err
-	}
-	raw, err := os.ReadFile(full)
+func readPageFile(ctx context.Context, root *os.Root, rel string) (string, error) {
+	raw, err := root.ReadFile(rel)
 	if err != nil {
 		return "", errors.Wrap(ctx, err, "read page")
 	}
