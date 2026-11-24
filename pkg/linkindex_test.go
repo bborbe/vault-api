@@ -228,6 +228,26 @@ var _ = Describe("LinkIndex", func() {
 			_, err = index.Page(ctx, "24 Goals/Target Goal.txt")
 			Expect(vaultapi.IsNotFound(err)).To(BeTrue())
 		})
+
+		It("refuses a page reached through a symlinked directory", func() {
+			// A path check cannot see this one: the page name and its directory
+			// segment are both ordinary, and only the directory itself is a
+			// symlink out of the vault. os.Root is what refuses it.
+			outside, err := os.MkdirTemp("", "vault-api-outside")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = os.RemoveAll(outside) }()
+			Expect(os.WriteFile(filepath.Join(outside, "Secret.md"), []byte("Secret.\n"), 0o600)).
+				To(Succeed())
+			Expect(os.Symlink(outside, filepath.Join(vaultPath, "Linked"))).To(Succeed())
+
+			_, err = index.Page(ctx, "Linked/Secret.md")
+			Expect(err).To(HaveOccurred())
+			Expect(vaultapi.IsNotFound(err)).To(BeTrue())
+
+			_, err = index.Backlinks(ctx, "Linked/Secret.md")
+			Expect(err).To(HaveOccurred())
+			Expect(vaultapi.IsNotFound(err)).To(BeTrue())
+		})
 	})
 
 	Describe("LinkRegistry", func() {
