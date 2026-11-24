@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- chore: remove stale vulnerability ignore IDs that no longer apply (govulncheck, trivy)
+
 ## v0.37.1
 
 - fix: **`GET /api/v1/pages/{path}` resolves the wikilinks its frontmatter carries.** The page's `links` map was built from the body alone — `LinkTargets` deliberately drops the frontmatter, because the same extraction feeds the link index and `Backlinks` — so a consumer rendering a frontmatter value such as `goals: '[[Self-Serve Drop Zone for Plan Data]]'` had no href for it and emitted a missing-link marker unless the target also appeared in the body. The page read now resolves the frontmatter targets too, while the index and `Backlinks` keep their body-only set: a page that links to another only from its frontmatter is not that page's backlink.

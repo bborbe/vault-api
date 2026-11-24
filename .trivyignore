@@ -1,7 +1,0 @@
-# GO-2026-5932: golang.org/x/crypto/openpgp is unmaintained and unsafe by design,
-# with no fixed version. It enters the module graph through github.com/bborbe/agent
-# (needed for lib.Task in the change-event publisher) and is never imported by this
-# service. Revisit by the exp date: re-check whether bborbe/agent has dropped
-# x/crypto, or whether a reachable call path has appeared. Same entry as the
-# govulncheck ignore list in the Makefile.
-GO-2026-5932 exp:2027-04-23
