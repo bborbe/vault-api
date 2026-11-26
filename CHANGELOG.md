@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- feat: **list responses name the vaults the instance serves.** `GET /api/v1/tasks`, `/goals` and `/topics` now carry a `vaults` array — the primary vault first, then each attached vault — because a list query cannot express coverage: a vault this instance does not index and a vault it does index but which has no matching rows both answer with an empty list. A consumer can now tell "no source for that vault" from "nothing in that vault". The field is omitted when nothing is known, so an older build's response reads as "no coverage claim" rather than "covers nothing".
+
 ## v0.37.2
 
 - chore: remove stale vulnerability ignore IDs that no longer apply (govulncheck, trivy)

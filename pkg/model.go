@@ -187,6 +187,15 @@ type ListResponse[T any] struct {
 	Total           int   `json:"total"`
 	Warnings        int   `json:"warnings"`
 	IndexAgeSeconds int64 `json:"index_age_seconds"`
+	// Vaults names every vault this instance serves — the primary first, then
+	// each attached vault in attach order. It exists because a list query cannot
+	// express coverage: a vault this instance does not index and a vault it does
+	// index but which has no matching rows both answer with an empty list, so a
+	// consumer joining its own configured set against this field is the only way
+	// to tell "no source for that vault" from "nothing in that vault". It is
+	// omitted rather than empty when nothing is known, so an older build's
+	// response reads as "no coverage claim" instead of "covers nothing".
+	Vaults []string `json:"vaults,omitempty"`
 }
 
 // Readiness is the body of GET /readiness.

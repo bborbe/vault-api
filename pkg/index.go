@@ -1160,6 +1160,24 @@ func (i *Index) VaultName() string {
 	return i.cfg.VaultName
 }
 
+// IndexedVaults names every vault this instance serves — the primary first,
+// then each attached vault in attach order. It is the coverage signal a
+// consumer joins against its own configured set: a list query cannot express
+// coverage, because a vault this instance does not index and a vault it does
+// index but which has no matching rows both answer with an empty list.
+//
+// It reads the attached list through attachedIndexes, so a caller never holds
+// this index's lock while it walks another index's config.
+func (i *Index) IndexedVaults() []string {
+	extras := i.attachedIndexes()
+	names := make([]string, 0, len(extras)+1)
+	names = append(names, i.cfg.VaultName)
+	for _, extra := range extras {
+		names = append(names, extra.cfg.VaultName)
+	}
+	return names
+}
+
 // GetAttachedTask resolves id in the attached vaults, in attach order, and
 // returns the task with the config of the vault that holds it, so the caller can
 // read the page from that vault's own tree.

@@ -253,6 +253,7 @@ func handleListTasks(index *vaultapi.Index, clock libtime.CurrentDateTime) http.
 			Total:           len(items),
 			Warnings:        warnings,
 			IndexAgeSeconds: age,
+			Vaults:          index.IndexedVaults(),
 		})
 	}
 }
@@ -341,6 +342,7 @@ func handleListGoals(index *vaultapi.Index) http.HandlerFunc {
 			Total:           len(filtered),
 			Warnings:        warnings,
 			IndexAgeSeconds: age,
+			Vaults:          index.IndexedVaults(),
 		})
 	}
 }
@@ -383,6 +385,7 @@ func handleListTopics(index *vaultapi.Index) http.HandlerFunc {
 			Total:           len(filtered),
 			Warnings:        warnings,
 			IndexAgeSeconds: age,
+			Vaults:          index.IndexedVaults(),
 		})
 	}
 }
