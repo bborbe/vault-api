@@ -17,7 +17,9 @@ Typed read API over an Obsidian vault working tree. It serves typed tasks and go
 | `GET /readiness` | 200 with `vault`, `index_age_seconds`, `tree_age_seconds`, `head`, `warnings`; 503 until the first index build, and again whenever either freshness signal leaves `--stale-after` |
 | `GET /healthz`, `/metrics`, `/setloglevel/{level}`, `/gc` | Fleet admin endpoints |
 
-List responses carry `items`, `total`, `warnings` and `index_age_seconds`. A file whose frontmatter does not parse, or whose `status`/`phase` is present but not a known value, is excluded from list results and counted in `warnings` — never coerced.
+List responses carry `items`, `total`, `warnings`, `index_age_seconds` and `vaults`. A file whose frontmatter does not parse, or whose `status`/`phase` is present but not a known value, is excluded from list results and counted in `warnings` — never coerced.
+
+`vaults` names every vault this instance serves — the primary first, then each attached vault. It exists because a list query cannot express **coverage**: a vault this instance does not index and a vault it does index but which has no matching rows both answer with `items: []`. A consumer joining its own configured set against `vaults` is the only way to tell "no source for that vault" from "nothing in that vault". It is the *configured* set, not a liveness claim — an attached vault whose last build failed still appears, so read `/readiness`'s `unavailable_vaults` for the freshness half.
 
 `GET /api/v1/claims` is the one list that reads live rather than from the index, so its envelope is `items`, `total` and `skipped` instead: there is no index whose age could describe a claim, and reporting one would be a number a caller might gate on. `skipped` counts refs under the `claims/` prefix that are not addressable claims — the redrive streak keys are counters, never acquired or released. A claim carries `scope`, `id`, `holder`, `task_id`, `lease_until`, `renew_before` and `lease_token`, and never the transport key: a caller addresses a claim by `scope` and `id`, which is what the renew and release routes accept.
 

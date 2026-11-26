@@ -1166,6 +1166,12 @@ func (i *Index) VaultName() string {
 // coverage, because a vault this instance does not index and a vault it does
 // index but which has no matching rows both answer with an empty list.
 //
+// It is the CONFIGURED set, not a liveness claim. An attached vault whose last
+// build failed still appears here — its last-good rows keep being merged into
+// the list queries — so a consumer that needs "served and fresh" must also read
+// Readiness().UnavailableVaults. Names are as configured and may repeat if two
+// indexes share a VaultName; a caller joining them into a set is unaffected.
+//
 // It reads the attached list through attachedIndexes, so a caller never holds
 // this index's lock while it walks another index's config.
 func (i *Index) IndexedVaults() []string {

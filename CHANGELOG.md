@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-- feat: **list responses name the vaults the instance serves.** `GET /api/v1/tasks`, `/goals` and `/topics` now carry a `vaults` array — the primary vault first, then each attached vault — because a list query cannot express coverage: a vault this instance does not index and a vault it does index but which has no matching rows both answer with an empty list. A consumer can now tell "no source for that vault" from "nothing in that vault". The field is omitted when nothing is known, so an older build's response reads as "no coverage claim" rather than "covers nothing".
+- feat: **list responses name the vaults the instance serves.** `GET /api/v1/tasks`, `/goals` and `/topics` now carry a `vaults` array — the primary vault first, then each attached vault — because a list query cannot express coverage: a vault this instance does not index and a vault it does index but which has no matching rows both answer with an empty list. A consumer can now tell "no source for that vault" from "nothing in that vault". It is the **configured** set, not a liveness claim: an attached vault whose last build failed still appears, so a consumer needing "served and fresh" must also read `/readiness`'s `unavailable_vaults`. `omitempty` exists for wire-compatibility with builds predating the field; this producer always emits at least the primary vault.
 
 ## v0.37.2
 
