@@ -89,6 +89,7 @@ var _ = Describe("Index with attached vaults", func() {
 		items, _, _ := primary.QueryTasks(vaultapi.TaskFilter{})
 		Expect(taskVaults(items)).To(ConsistOf("private-personal"))
 		Expect(primary.Readiness().UnavailableVaults).To(BeEmpty())
+		Expect(primary.IndexedVaults()).To(Equal([]string{"private-personal"}))
 	})
 
 	It("merges every attached vault's rows into the list queries, each with its own vault", func() {
@@ -102,6 +103,11 @@ var _ = Describe("Index with attached vaults", func() {
 
 		goals, _, _ := primary.QueryGoals()
 		Expect(goalVaults(goals)).To(ConsistOf("private-personal", "seibert-brogrammers"))
+
+		// IndexedVaults is the coverage signal, so it pins order as well as
+		// membership: a consumer reads element 0 as the primary vault.
+		Expect(primary.IndexedVaults()).
+			To(Equal([]string{"private-personal", "seibert-brogrammers"}))
 	})
 
 	It("keeps lookups by id on the primary vault only", func() {

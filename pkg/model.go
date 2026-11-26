@@ -187,6 +187,20 @@ type ListResponse[T any] struct {
 	Total           int   `json:"total"`
 	Warnings        int   `json:"warnings"`
 	IndexAgeSeconds int64 `json:"index_age_seconds"`
+	// Vaults names every vault this instance serves — the primary first, then
+	// each attached vault in attach order. It exists because a list query cannot
+	// express coverage: a vault this instance does not index and a vault it does
+	// index but which has no matching rows both answer with an empty list, so a
+	// consumer joining its own configured set against this field is the only way
+	// to tell "no source for that vault" from "nothing in that vault".
+	//
+	// It is the CONFIGURED set, not a liveness claim: an attached vault whose
+	// last build failed still appears here, so a consumer must read
+	// /readiness.unavailable_vaults to tell "served and fresh" from "served but
+	// stale". omitempty exists for wire-compatibility with builds predating the
+	// field; this producer always emits at least the primary vault, so an empty
+	// array never means "covers nothing".
+	Vaults []string `json:"vaults,omitempty"`
 }
 
 // Readiness is the body of GET /readiness.

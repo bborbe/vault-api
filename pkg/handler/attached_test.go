@@ -115,6 +115,21 @@ var _ = Describe("Multi-vault task reads", func() {
 		Expect(ids).To(HaveKey("seibert-brogrammers"))
 	})
 
+	// The coverage array is the whole point of the field, so it is asserted on
+	// the wire for every list endpoint: a handler that forgets to populate it
+	// leaves an empty array, which a consumer reads as "serves nothing".
+	It("names the served vaults on every list endpoint", func() {
+		for _, path := range []string{"/api/v1/tasks", "/api/v1/goals", "/api/v1/topics"} {
+			recorder := call(path)
+			Expect(recorder.Code).To(Equal(http.StatusOK), path)
+			var body struct {
+				Vaults []string `json:"vaults"`
+			}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &body)).To(Succeed())
+			Expect(body.Vaults).To(Equal([]string{"private-personal", "seibert-brogrammers"}), path)
+		}
+	})
+
 	It("serves the detail read for a task listed from an attached vault", func() {
 		id := listedIDs()["seibert-brogrammers"]
 		Expect(id).NotTo(BeEmpty())
