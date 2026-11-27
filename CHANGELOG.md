@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- fix: **the release build now renders.** `hack/build-job.yaml` carried five template tokens the dispatcher never substitutes (`__NAMESPACE__`, `__GIT_SECRET__`, `__MINT_IMAGE__`, `__MINT_PULL_SECRET__`, `__DOCKER_REGISTRY__`), so every dispatch was skipped with `reason=unrendered_token` and no build Job was ever created — the `dockerBuild` opt-in alone could not publish an image. Replaced with the watcher-renderable template: `namespace: build` hardcoded, a plain `git` clone (no GitHub-App mint), and `DOCKER_REGISTRY=docker.io` as a literal build arg.
+- fix: **the release build compiles on a bare clone.** `Dockerfile` built with `go build -mod=vendor`, but `vendor/` is gitignored, so the in-cluster build — which clones the tag with a plain `git fetch --depth=1` and runs no `go mod vendor` — failed with `inconsistent vendoring`. The build stage now fetches modules into a cache layer and builds in module mode; verified on a `vendor/`-less copy of the tree (`go build -mod=vendor` fails there, module mode exits 0).
+
 ## v0.39.0
 
 - chore: **release tags publish a Docker image automatically.** `.maintainer.yaml` now opts the repo into the in-cluster release build (`dockerBuild: {autoBuild: true, destinations: [dockerhub]}`), so `github-release-watcher` dispatches a build Job for each release tag instead of image publishing being a manual `make buca` that nothing on the release path invokes. Six prior tags (`v0.34.2`–`v0.37.1`) shipped with no Docker Hub image for exactly that reason; this fixes future tags.
