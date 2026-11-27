@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- chore: **the repository is public.** The in-cluster release build clones the tagged commit over plain HTTPS with no git credential, so a private repository could be dispatched but never cloned (`fatal: could not read Username for 'https://github.com'` in the build Job's init container). Public, the release path can build the image it already tags.
+
 ## v0.39.1
 
 - fix: **the release build now renders.** `hack/build-job.yaml` carried five template tokens the dispatcher never substitutes (`__NAMESPACE__`, `__GIT_SECRET__`, `__MINT_IMAGE__`, `__MINT_PULL_SECRET__`, `__DOCKER_REGISTRY__`), so every dispatch was skipped with `reason=unrendered_token` and no build Job was ever created — the `dockerBuild` opt-in alone could not publish an image. Replaced with the watcher-renderable template: `namespace: build` hardcoded, a plain `git` clone (no GitHub-App mint), and `DOCKER_REGISTRY=docker.io` as a literal build arg.
