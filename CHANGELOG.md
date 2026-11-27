@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- chore: update github.com/IBM/sarama to v1.62.0, github.com/bborbe/agent to v0.149.0, github.com/bborbe/cqrs to v0.6.18, github.com/bborbe/errors to v1.7.1, github.com/bborbe/http to v1.28.0, github.com/bborbe/kafka to v1.30.4, github.com/bborbe/log to v1.7.10, github.com/bborbe/run to v1.13.0, github.com/bborbe/sentry to v1.11.1, github.com/bborbe/service to v1.12.2, github.com/bborbe/time to v1.27.30, github.com/bborbe/vault-cli to v0.200.6
+
 ## v0.38.0
 
 - feat: **list responses name the vaults the instance serves.** `GET /api/v1/tasks`, `/goals` and `/topics` now carry a `vaults` array — the primary vault first, then each attached vault — because a list query cannot express coverage: a vault this instance does not index and a vault it does index but which has no matching rows both answer with an empty list. A consumer can now tell "no source for that vault" from "nothing in that vault". It is the **configured** set, not a liveness claim: an attached vault whose last build failed still appears, so a consumer needing "served and fresh" must also read `/readiness`'s `unavailable_vaults`. `omitempty` exists for wire-compatibility with builds predating the field; this producer always emits at least the primary vault.
