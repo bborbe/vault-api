@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.39.0
 
 - chore: **release tags publish a Docker image automatically.** `.maintainer.yaml` now opts the repo into the in-cluster release build (`dockerBuild: {autoBuild: true, destinations: [dockerhub]}`), so `github-release-watcher` dispatches a build Job for each release tag instead of image publishing being a manual `make buca` that nothing on the release path invokes. Six prior tags (`v0.34.2`–`v0.37.1`) shipped with no Docker Hub image for exactly that reason; this fixes future tags.
 
