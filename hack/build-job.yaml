@@ -1,10 +1,13 @@
 # Parameterized BuildKit build Job.
 #
-# Rendered by hack/build-cluster.sh, which is called from
-# `make build BUILD_TARGET=<kubectl-context>`; never applied by hand.
+# Rendered and applied by the release-to-image dispatcher when this repo is
+# released, and by `hack/build-cluster.sh` when `make build` runs with a
+# BUILD_TARGET other than `local`. The default local arm does not use it:
+# `make build` with no BUILD_TARGET still builds with plain `docker build`.
 #
-# This file lives outside k8s/ on purpose: k8s/Makefile applies every *.yaml
-# under k8s/, so a template kept there would be adopted as deploy state.
+# This file lives outside k8s/ on purpose: everything under k8s/ is deploy
+# state reached through `make apply`, so a template kept there would be adopted
+# as such.
 #
 # Template tokens:
 #   __JOB_NAME__           Job name, derived from __TAG__ and sanitized for DNS
@@ -15,28 +18,17 @@
 #   __IMAGE__              target image repository, without tag
 #   __PUSH__               "true" to push the built image
 #   __PUSH_SECRET__        name of the dockerconfigjson secret to mount
-#   __GIT_SECRET__         name of the generic secret holding the GitHub App
-#                          credential (APP_ID, INSTALLATION_ID, PEM_KEY)
-#   __MINT_IMAGE__         image that mints the App's installation token,
-#                          pinned by digest
-#   __MINT_PULL_SECRET__   dockerconfigjson secret that can pull __MINT_IMAGE__
-#   __NODE_SELECTOR__      flow-form nodeSelector; the whole line is deleted when
-#                          the token renders empty, so a cluster with no pinned
-#                          node is not left with an unschedulable Job
 #   __DEADLINE_SECONDS__   Job deadline in seconds
 #   __SOURCE_DATE_EPOCH__  commit timestamp, decimal seconds
-#   __DOCKER_REGISTRY__    registry passed to the Dockerfile as a build arg
 #
-# Prerequisites (not created by this manifest): a kubernetes.io/dockerconfigjson
+# Prerequisite (not created by this manifest): a kubernetes.io/dockerconfigjson
 # secret in the build namespace, named by __PUSH_SECRET__, holding a credential
-# that may push to the target registry; and an Opaque secret named by
-# __GIT_SECRET__ carrying APP_ID, INSTALLATION_ID and PEM_KEY for a GitHub App
-# installed on the repository.
+# that may push to the target registry.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: __JOB_NAME__
-  namespace: __NAMESPACE__
+  namespace: build
   labels:
     app.kubernetes.io/name: image-build
     app.kubernetes.io/component: build
@@ -44,7 +36,7 @@ metadata:
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: __DEADLINE_SECONDS__
-  ttlSecondsAfterFinished: 86400
+  ttlSecondsAfterFinished: 46800
   template:
     metadata:
       labels:
@@ -54,67 +46,7 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
-      # Two credentials, because the two registries differ: the mint image is
-      # served from the private nuke registry, while the built image is pushed
-      # to docker.io. A single pull secret covers only the one whose host it
-      # names, so the pod carries both and the kubelet tries each in order.
-      imagePullSecrets:
-        - name: __MINT_PULL_SECRET__
-        - name: __PUSH_SECRET__
-      # sun's master carries no taint and only 4 CPU / 4 GiB, so an unpinned
-      # build Job lands on the control plane; the worker is the build node.
-      nodeSelector: __NODE_SELECTOR__
       initContainers:
-        # Mints a GitHub App installation token into a shared emptyDir before
-        # the clone runs. vault-api is a private repository, so the anonymous
-        # clone every public repo in the fleet uses fails here with
-        # `could not read Username for 'https://github.com'`.
-        #
-        # The token is redirected straight into a file: it must never reach the
-        # container log, and the credential helper below reads it from there.
-        - name: mint-token
-          image: __MINT_IMAGE__
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              /main > /token/token
-          env:
-            # The two IDs come from the secret rather than from render time, so
-            # the manifest carries no credential and a rotated App needs no
-            # re-render. The PEM is a file, so it is mounted rather than passed
-            # as an env var.
-            - name: APP_ID
-              valueFrom:
-                secretKeyRef:
-                  name: __GIT_SECRET__
-                  key: APP_ID
-            - name: INSTALLATION_ID
-              valueFrom:
-                secretKeyRef:
-                  name: __GIT_SECRET__
-                  key: INSTALLATION_ID
-            - name: PEM_KEY_FILE
-              value: /git-credential/PEM_KEY
-          resources:
-            requests:
-              cpu: 100m
-              memory: 64Mi
-            limits:
-              cpu: 100m
-              memory: 64Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            seccompProfile:
-              type: RuntimeDefault
-          volumeMounts:
-            - name: git-credential
-              mountPath: /git-credential
-              readOnly: true
-            - name: token
-              mountPath: /token
         - name: clone
           image: alpine/git:v2.54.0@sha256:e8ceedc73bd80992ae8d58a7d24c58b8322146c354f1d2e81a97db4452068ec0
           command: ["/bin/sh", "-c"]
@@ -134,22 +66,12 @@ spec:
             - "__REPO_URL__"
             - "__REF__"
           env:
-            # COUNT must stay one ahead of the KEY_/VALUE_ pairs below: git reads
-            # exactly GIT_CONFIG_COUNT entries, so adding a pair without
-            # bumping it silently drops that pair and the fetch fails exactly
-            # as it did before the credential existed.
             - name: GIT_CONFIG_COUNT
-              value: "2"
+              value: "1"
             - name: GIT_CONFIG_KEY_0
               value: safe.directory
             - name: GIT_CONFIG_VALUE_0
               value: /src
-            # The helper, not an inline URL: a token in the remote URL leaks
-            # through `git remote -v`, the rendered manifest and the clone log.
-            - name: GIT_CONFIG_KEY_1
-              value: credential.helper
-            - name: GIT_CONFIG_VALUE_1
-              value: "!f() { echo username=x-access-token; echo \"password=$(cat /token/token)\"; }; f"
           # Memory requests are deliberately small: the build node runs at ~98%
           # of its request capacity, and a pod asking for a GiB of scheduling
           # headroom to do a few hundred MiB of work never schedules there.
@@ -174,40 +96,6 @@ spec:
               mountPath: /src
             - name: meta
               mountPath: /meta
-            # Read-only: the token is produced by mint-token, never by clone.
-            - name: token
-              mountPath: /token
-              readOnly: true
-        # This repo builds with `-mod=vendor` while /vendor/ is gitignored, so the
-        # clone carries no vendor directory. The local arm regenerates it through
-        # `check-go-mod` before `docker build`; the cluster arm must do the same
-        # here, or `go build -mod=vendor` fails on an empty vendor/modules.txt.
-        - name: vendor
-          image: golang:1.27.4
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              cd /src
-              go mod vendor
-          resources:
-            requests:
-              cpu: 200m
-              memory: 128Mi
-            limits:
-              cpu: "2"
-              memory: 2Gi
-          # Same hardening as the clone: `go mod vendor` writes /src and the
-          # module cache, and needs no capability to do it.
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            seccompProfile:
-              type: RuntimeDefault
-          volumeMounts:
-            - name: src
-              mountPath: /src
       containers:
         - name: build
           image: moby/buildkit:v0.34.1-rootless@sha256:f68752a5a94acfcdad2d07867b7075601a421638e17fc5f28efc1c814d0c4f89
@@ -230,7 +118,7 @@ spec:
                 --opt build-arg:BUILD_GIT_VERSION="$(cat /meta/git-version)" \
                 --opt build-arg:BUILD_GIT_COMMIT="$(cat /meta/git-commit)" \
                 --opt build-arg:BUILD_DATE="$(cat /meta/source-date-iso)" \
-                --opt build-arg:DOCKER_REGISTRY=__DOCKER_REGISTRY__ \
+                --opt build-arg:DOCKER_REGISTRY=docker.io \
                 --metadata-file /meta/metadata.json \
                 --output type=image,name=__IMAGE__:__TAG__,push=__PUSH__,rewrite-timestamp=true
               cat /meta/metadata.json
@@ -278,14 +166,6 @@ spec:
           emptyDir: {}
         - name: buildkitd
           emptyDir: {}
-        - name: token
-          emptyDir: {}
-        - name: git-credential
-          secret:
-            secretName: __GIT_SECRET__
-            items:
-              - key: PEM_KEY
-                path: PEM_KEY
         - name: docker-config
           secret:
             secretName: __PUSH_SECRET__
