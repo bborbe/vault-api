@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.39.2
 
 - chore: **the repository is public.** The in-cluster release build clones the tagged commit over plain HTTPS with no git credential, so a private repository could be dispatched but never cloned (`fatal: could not read Username for 'https://github.com'` in the build Job's init container). Public, the release path can build the image it already tags.
 
